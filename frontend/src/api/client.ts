@@ -1,7 +1,7 @@
 import type {
   ApiErrorPayload, AppSettings, CalibrationValidation, CameraDevice, CameraStatus, Capabilities, CaptureFrame,
   CaptureSet, DiagnosticCheck, ExportSnapshot, JobSnapshot, PagedResult, PaintedRecord, PointCloudManifest,
-  ProbeCalibration, Project, ProjectSummary, Registration, ResourceSnapshot, ReviewFilters, SceneMap,
+  ProbeCalibration, Project, ProjectSummary, Registration, ResourceSnapshot, ReviewFilters, SceneMap, MapTransform,
   SessionSnapshot, SessionSummary,
 } from "./types";
 
@@ -128,6 +128,7 @@ export const api = {
   maps: {
     list: (projectId: string, signal?: AbortSignal) => request<SceneMap[]>(`/projects/${projectId}/maps`, { signal }),
     create: (projectId: string, set: CaptureSet, computeProfile: string, name: string) => request<SceneMap & { job_id: string }>(`/projects/${projectId}/maps`, { method: "POST", body: JSON.stringify({ capture_set_id: set.id, capture_set_revision: set.revision, compute_profile: computeProfile, name }) }),
+    saveTransform: (projectId: string, id: string, transform: MapTransform) => request<{ status: string; user_transform: MapTransform }>(`/projects/${projectId}/maps/${id}/transform`, { method: "POST", body: JSON.stringify(transform) }),
     activate: (projectId: string, id: string) => request<void>(`/projects/${projectId}/maps/${id}/activate`, { method: "POST" }),
     manifest: (projectId: string, id: string, signal?: AbortSignal) => request<PointCloudManifest>(`/projects/${projectId}/maps/${id}/point-cloud/manifest`, { signal }),
   },

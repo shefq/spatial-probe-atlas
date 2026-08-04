@@ -59,6 +59,12 @@ class MapCreate(BaseModel):
     name: str = Field(default="Reference map", min_length=1, max_length=120)
 
 
+class MapTransformUpdate(BaseModel):
+    position: list[float] = Field(default_factory=lambda: [0.0, 0.0, 0.0])
+    quaternion: list[float] = Field(default_factory=lambda: [0.0, 0.0, 0.0, 1.0])
+    scale: float = 1.0
+
+
 class ValidationImportRequest(BaseModel):
     validation_id: str
     activate: bool = True

@@ -18,6 +18,8 @@ export interface V1Manifest {
   pointCount: number;
   rootTiles: string[];
   tiles: Record<string, V1Tile>;
+  registered_cameras?: any[];
+  registeredCameras?: any[];
 }
 
 type RawManifest = {

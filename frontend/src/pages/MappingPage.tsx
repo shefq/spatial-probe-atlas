@@ -118,7 +118,8 @@ export function MappingPage() {
     if (!selectedSet || selectedSet.accepted_frame_count < 20) return;
     setBusy(true);
     try {
-      const map = await api.maps.create(projectId, selectedSet, computeProfile, mapName.trim() || "Reference map");
+      const latestSet = await api.capture.getSet(projectId, selectedSet.id);
+      const map = await api.maps.create(projectId, latestSet, computeProfile, mapName.trim() || "Reference map");
       setMaps((current) => [map, ...current]); setSelectedMapId(map.id);
       upsertJob({ id: map.job_id, type: "mapping", state: "queued", progress: 0, owner_project_id: projectId, effective_compute_profile: map.job_id ? computeProfile : compute });
       pushToast({ kind: "success", title: "Reconstruction queued", message: "Progress is durable; you can leave this page." });

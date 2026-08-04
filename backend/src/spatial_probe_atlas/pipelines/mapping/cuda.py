@@ -259,6 +259,7 @@ def _publish_map(
     input_images: int,
     errors: list[float],
     track_lengths: list[int],
+    registered_cameras_list: list[dict[str, Any]] | None = None,
     dependency_versions: dict[str, str],
     model_checksums: dict[str, str],
     progress: ProgressCallback,
@@ -276,6 +277,8 @@ def _publish_map(
         units="arbitrary",
     )
     manifest["compute_profile"] = CUDA_MAPPING_PROFILE
+    if registered_cameras_list:
+        manifest["registered_cameras"] = registered_cameras_list
     manifest["authoritative_ply"] = {
         "relative_uri": f"projects/{project_id}/maps/{map_id}/point-cloud.ply",
         "sha256": ply_sha,
@@ -459,6 +462,21 @@ def build_cuda_point_cloud(
                 status_code=422,
                 details={"registered_images": registered, "point_count": len(points)},
             )
+        cameras_list: list[dict[str, Any]] = []
+        for img_id, img in sorted(reconstruction.images.items()):
+            try:
+                C = img.projection_center() if callable(img.projection_center) else img.projection_center
+                cfw = img.cam_from_world() if callable(img.cam_from_world) else img.cam_from_world
+                qx, qy, qz, qw = cfw.rotation.quat
+                cameras_list.append({
+                    "id": str(img_id),
+                    "name": img.name,
+                    "position": [float(C[0]), float(C[1]), float(C[2])],
+                    "quaternion": [float(-qx), float(-qy), float(-qz), float(qw)],
+                })
+            except Exception:
+                pass
+
         shutil.rmtree(image_dir, ignore_errors=True)
         result = _publish_map(
             store,
@@ -472,6 +490,7 @@ def build_cuda_point_cloud(
             input_images=len(frames),
             errors=errors,
             track_lengths=track_lengths,
+            registered_cameras_list=cameras_list,
             dependency_versions=dependency_versions,
             model_checksums=model_checksums,
             progress=progress,

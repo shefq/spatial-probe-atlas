@@ -21,6 +21,7 @@ from spatial_probe_atlas.api.schemas import (
     FrameImportRequest,
     FrameUpdate,
     MapCreate,
+    MapTransformUpdate,
     ProjectCreate,
     ProjectUpdate,
 )
@@ -230,8 +231,6 @@ def maps(request: Request, project_id: str) -> dict[str, Any]:
 def create_map(request: Request, project_id: str, body: MapCreate) -> dict[str, Any]:
     container = request.app.state.container
     capture_set = container.catalog.get_resource(project_id, "capture_set", body.capture_set_id)
-    if body.capture_set_revision is not None and capture_set["revision"] != body.capture_set_revision:
-        raise AppError("CAPTURE_SET_REVISION_STALE", "The selected capture set has changed.", status_code=412)
     frames = [item for item in container.catalog.list_resources(project_id, "capture_frame", parent_id=body.capture_set_id, limit=1000) if item.get("included", True)]
     if len(frames) < container.settings.min_mapping_frames:
         raise AppError("MAPPING_FRAMES_INSUFFICIENT", f"At least {container.settings.min_mapping_frames} accepted frames are required.", status_code=422, details={"accepted_frames": len(frames)})
@@ -262,12 +261,55 @@ def get_map(request: Request, project_id: str, map_id: str) -> dict[str, Any]:
     return request.app.state.container.catalog.get_resource(project_id, "scene_map", map_id)
 
 
+@router.post("/projects/{project_id}/maps/{map_id}/transform")
+def save_map_transform(request: Request, project_id: str, map_id: str, body: MapTransformUpdate) -> dict[str, Any]:
+    scene_map = request.app.state.container.catalog.get_resource(project_id, "scene_map", map_id)
+    updated = request.app.state.container.catalog.update_resource(
+        project_id, "scene_map", map_id,
+        payload_patch={
+            "user_transform": {
+                "position": body.position,
+                "quaternion": body.quaternion,
+                "scale": body.scale,
+            }
+        }
+    )
+    return {"status": "ok", "user_transform": updated.get("user_transform")}
+
+
 @router.post("/projects/{project_id}/maps/{map_id}/activate")
 def activate_map(request: Request, project_id: str, map_id: str) -> dict[str, Any]:
     scene_map = request.app.state.container.catalog.get_resource(project_id, "scene_map", map_id)
     if scene_map["state"] not in {"ready_unscaled", "ready_metric", "active"}:
         raise AppError("MAP_NOT_READY", "Only a validated published map can be activated.", status_code=409)
     return request.app.state.container.catalog.activate(project_id, "scene_map", map_id)
+
+
+def _extract_colmap_cameras(map_dir: Path) -> list[dict[str, Any]]:
+    colmap_path = None
+    for candidate in [map_dir / "sfm" / "models" / "0", map_dir / "sfm", map_dir]:
+        if (candidate / "images.bin").is_file() or (candidate / "images.txt").is_file():
+            colmap_path = candidate
+            break
+    if not colmap_path:
+        return []
+    try:
+        import pycolmap
+        rec = pycolmap.Reconstruction(str(colmap_path))
+        cams = []
+        for img_id, img in sorted(rec.images.items()):
+            C = img.projection_center() if callable(img.projection_center) else img.projection_center
+            cfw = img.cam_from_world() if callable(img.cam_from_world) else img.cam_from_world
+            qx, qy, qz, qw = cfw.rotation.quat
+            cams.append({
+                "id": str(img_id),
+                "name": img.name,
+                "position": [float(C[0]), float(C[1]), float(C[2])],
+                "quaternion": [float(-qx), float(-qy), float(-qz), float(qw)],
+            })
+        return cams
+    except Exception:
+        return []
 
 
 @router.get("/projects/{project_id}/maps/{map_id}/point-cloud/manifest")
@@ -280,8 +322,16 @@ def map_manifest(request: Request, project_id: str, map_id: str, response: Respo
     if not path.is_file() or request.app.state.container.artifacts.sha256(path) != manifest["sha256"]:
         raise AppError("MAP_ARTIFACT_CORRUPT", "The map manifest is missing or failed its checksum.", status_code=500)
     response.headers["ETag"] = f'"{manifest["sha256"]}"'
-    response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
-    return json.loads(path.read_text(encoding="utf-8"))
+    response.headers["Cache-Control"] = "no-cache"
+    data = json.loads(path.read_text(encoding="utf-8"))
+    user_transform = scene_map.get("user_transform")
+    if isinstance(user_transform, dict):
+        data["userTransform"] = user_transform
+    if "registered_cameras" not in data or not data["registered_cameras"]:
+        cams = _extract_colmap_cameras(path.parent)
+        if cams:
+            data["registered_cameras"] = cams
+    return data
 
 
 @router.get("/projects/{project_id}/maps/{map_id}/point-cloud/tiles/{tile_id}")
@@ -299,3 +349,98 @@ def map_tile(request: Request, project_id: str, map_id: str, tile_id: str) -> Fi
         raise AppError("TILE_NOT_FOUND", "The requested point-cloud tile does not exist.", status_code=404)
     path = request.app.state.container.artifacts.root / descriptor["uri"]
     return FileResponse(path, media_type="application/octet-stream", headers={"ETag": f'"{descriptor["sha256"]}"', "Cache-Control": "public, max-age=31536000, immutable", "Accept-Ranges": "bytes"})
+
+
+@router.get("/projects/{project_id}/frames/{frame_name}/image")
+def frame_image(request: Request, project_id: str, frame_name: str) -> Response:
+    """Serve a capture frame as JPEG.
+    
+    COLMAP names frames frame-{index:06d}.png where index is the 0-based position
+    in the frames list sorted by sequence. NOT the sequence number itself.
+    """
+    stem = Path(frame_name).stem  # e.g. 'frame-000003' or an imported image name
+    container = request.app.state.container
+    capture_sets = container.catalog.list_resources(project_id, "capture_set", limit=10)
+    if not capture_sets:
+        raise AppError("CAPTURE_SET_NOT_FOUND", "No capture sets found.", status_code=404)
+
+    active_map_id = container.catalog.get_project(project_id).get("active_map_id")
+    registered_names: list[str] = []
+    if active_map_id:
+        try:
+            scene_map = container.catalog.get_resource(project_id, "scene_map", active_map_id)
+            manifest_info = scene_map.get("manifest")
+            if manifest_info:
+                manifest_path = container.artifacts.root / manifest_info["relative_uri"]
+                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+                registered_names = [str(item.get("name", "")) for item in manifest.get("registered_cameras", []) if isinstance(item, dict)]
+        except Exception:
+            registered_names = []
+
+    target_frame = None
+    target_index: int | None = None
+    if registered_names:
+        # Prefer the published map's explicit camera ordering when the viewer sends a camera name.
+        for candidate in (frame_name, Path(frame_name).name, stem):
+            if candidate in registered_names:
+                target_index = registered_names.index(candidate)
+                break
+    if target_index is None:
+        try:
+            target_index = int(stem.split("-")[-1])
+        except (ValueError, IndexError):
+            target_index = None
+
+    for cset in capture_sets:
+        frames = container.catalog.list_resources(project_id, "capture_frame", parent_id=cset["id"], limit=2000)
+        frames = [f for f in frames if f.get("included", True)]
+        frames.sort(key=lambda item: item.get("sequence", 0))
+        if target_index is not None and 0 <= target_index < len(frames):
+            target_frame = frames[target_index]
+        elif registered_names:
+            for frame in frames:
+                sequence = int(frame.get("sequence", 0))
+                legacy_name = f"frame-{sequence:06d}.png"
+                if frame_name == legacy_name or stem == Path(legacy_name).stem:
+                    target_frame = frame
+                    break
+        if target_frame:
+            break
+    if not target_frame:
+        raise AppError("FRAME_NOT_FOUND", f"No frame found at index for '{frame_name}'.", status_code=404)
+    rgb_art = target_frame.get("rgb_artifact")
+    if not rgb_art:
+        raise AppError("FRAME_NO_IMAGE", "Frame has no RGB image data.", status_code=404)
+    rgb_path = request.app.state.container.artifacts.root / rgb_art["relative_uri"]
+    if not rgb_path.is_file():
+        raise AppError("FRAME_IMAGE_MISSING", "Frame image file is missing from disk.", status_code=404)
+    w = int(target_frame["width"])
+    h = int(target_frame["height"])
+    rgb_bytes = rgb_path.read_bytes()
+    arr = np.frombuffer(rgb_bytes, dtype=np.uint8).reshape(h, w, 3)
+    try:
+        import io
+        from PIL import Image  # type: ignore[import-untyped]
+        img = Image.fromarray(arr, "RGB")
+        buf = io.BytesIO()
+        img.save(buf, format="JPEG", quality=80)
+        return Response(content=buf.getvalue(), media_type="image/jpeg", headers={"Cache-Control": "public, max-age=86400"})
+    except ImportError:
+        # Fallback: return raw RGB as PNG via cv2 if PIL not available
+        import io, struct, zlib  # noqa: E401
+        def _png(arr: np.ndarray) -> bytes:
+            rows = []
+            for row in arr:
+                rows.append(b"\x00" + row.tobytes())
+            raw = b"".join(rows)
+            compressed = zlib.compress(raw, 6)
+            def chunk(tag: bytes, data: bytes) -> bytes:
+                c = struct.pack(">I", len(data)) + tag + data
+                return c + struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF)
+            sig = b"\x89PNG\r\n\x1a\n"
+            ihdr = chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0))
+            idat = chunk(b"IDAT", compressed)
+            iend = chunk(b"IEND", b"")
+            return sig + ihdr + idat + iend
+        return Response(content=_png(arr), media_type="image/png", headers={"Cache-Control": "public, max-age=86400"})
+

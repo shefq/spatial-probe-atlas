@@ -84,6 +84,16 @@ async def _send_binary(websocket: WebSocket, header: dict[str, Any], payload: by
     await websocket.send_bytes(struct.pack("<I", len(header_bytes)) + header_bytes + payload)
 
 
+def _json_safe(obj: Any) -> Any:
+    if isinstance(obj, (datetime, date)):
+        return obj.isoformat()
+    if isinstance(obj, dict):
+        return {key: _json_safe(value) for key, value in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_json_safe(item) for item in obj]
+    return obj
+
+
 @router.websocket("/events")
 async def events(websocket: WebSocket) -> None:
     if not await _authorize(websocket):
@@ -96,11 +106,11 @@ async def events(websocket: WebSocket) -> None:
                 event = await asyncio.wait_for(queue.get(), timeout=5.0)
                 event["seq"] = sequence
                 sequence += 1
-                await websocket.send_json(event)
+                await websocket.send_json(_json_safe(event))
             except TimeoutError:
                 await websocket.send_json(_envelope("heartbeat", sequence, {"server_time": datetime.now(UTC).isoformat()}))
                 sequence += 1
-    except WebSocketDisconnect:
+    except (WebSocketDisconnect, Exception):
         pass
     finally:
         websocket.app.state.container.jobs.unsubscribe(queue)

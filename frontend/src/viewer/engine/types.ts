@@ -60,7 +60,23 @@ export interface ViewerMetrics {
   contextLost: boolean;
 }
 
+export type TransformMode = "translate" | "rotate" | "scale" | "none";
+
+export interface MapTransformData {
+  position: [number, number, number];
+  quaternion: [number, number, number, number];
+  scale: number;
+}
+
+export interface CameraItem {
+  id?: string;
+  name?: string;
+  position: [number, number, number];
+  quaternion?: [number, number, number, number];
+}
+
 export interface ViewerEngine {
+  onCameraDoubleClick?: ((cam: CameraItem) => void) | null;
   initialize(container: HTMLElement, options: ViewerOptions): Promise<void>;
   setMode(mode: ViewerMode): void;
   loadMap(source: PointCloudSource): Promise<void>;
@@ -69,6 +85,12 @@ export interface ViewerEngine {
   setPaintData(value: PaintDataDelta): void;
   setFilters(value: ViewerFilters): void;
   setSelection(value: ViewerSelection): void;
+  setTransformMode(mode: TransformMode): void;
+  getMapTransform(): MapTransformData;
+  resetMapTransform(): void;
+  setCameras(cameras: CameraItem[]): void;
+  setCamSize(size: number): void;
+  setPointSize(size: number): void;
   resize(width: number, height: number, dpr: number): void;
   getMetrics(): ViewerMetrics;
   resetView(): void;

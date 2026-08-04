@@ -188,6 +188,9 @@ def map_manifest_with_metric_binding(request: Request, project_id: str, map_id: 
         manifest["metric_binding"] = scene_map["metric_binding"]
         manifest["published_coordinate_frame"] = "W"
         manifest["published_units"] = "m"
+    user_transform = scene_map.get("user_transform")
+    if isinstance(user_transform, dict):
+        manifest["userTransform"] = user_transform
     return manifest
 
 

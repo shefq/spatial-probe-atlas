@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 
 def test_system_and_security_contracts(client):
     assert client.get("/health/live").status_code == 200
@@ -48,3 +51,95 @@ def test_project_idempotency_and_validation(client):
     assert first.status_code == second.status_code == 201
     assert first.json()["project_id"] == second.json()["project_id"]
     assert client.post("/api/v1/projects", json={"name": "   "}).status_code == 422
+
+
+def test_frame_image_route_uses_registered_camera_names(client):
+    container = client.app.state.container
+    project = container.catalog.create_project("Frame image route")
+    project_id = project["project_id"]
+
+    capture_set = container.catalog.create_resource(
+        project_id,
+        "capture_set",
+        state="draft",
+        name="Capture set",
+        payload={"source": "record3d", "frame_count": 1, "accepted_frame_count": 1, "size_bytes": 0},
+    )
+    capture_set_id = capture_set["capture_set_id"]
+
+    rgb_path = container.artifacts.project_path(project_id, Path("captures") / capture_set_id / "frames" / "frame-left.rgb8")
+    rgb_artifact = container.artifacts.atomic_write_bytes(rgb_path, bytes([255, 0, 0]))
+    container.catalog.create_resource(
+        project_id,
+        "capture_frame",
+        state="accepted",
+        parent_id=capture_set_id,
+        payload={
+            "sequence": 0,
+            "device_timestamp_ns": 1,
+            "width": 1,
+            "height": 1,
+            "intrinsic_matrix": [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
+            "intrinsics_source": "import",
+            "rgb_artifact": rgb_artifact,
+            "included": True,
+        },
+    )
+
+    manifest_path = container.artifacts.project_path(project_id, Path("maps") / "map-image-route" / "manifest.json")
+    manifest = container.artifacts.atomic_write_json(
+        manifest_path,
+        {
+            "registered_cameras": [{"id": "1", "name": "capture-left.png", "position": [0.0, 0.0, 0.0]}],
+            "coordinate_frame": "M0",
+            "units": "arbitrary",
+        },
+    )
+    scene_map = container.catalog.create_resource(
+        project_id,
+        "scene_map",
+        state="ready_metric",
+        name="Map",
+        payload={"manifest": manifest, "coordinate_frame": "M0", "units": "arbitrary"},
+    )
+    client.post(f"/api/v1/projects/{project_id}/maps/{scene_map['map_id']}/activate")
+
+    response = client.get(f"/api/v1/projects/{project_id}/frames/capture-left.png/image")
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("image/")
+    assert response.content
+
+
+def test_map_manifest_includes_saved_user_transform(client):
+    container = client.app.state.container
+    project = container.catalog.create_project("Manifest transform")
+    project_id = project["project_id"]
+
+    manifest_path = container.artifacts.project_path(project_id, Path("maps") / "map-transform" / "manifest.json")
+    manifest = container.artifacts.atomic_write_json(
+        manifest_path,
+        {
+            "schema_version": "1.0.0",
+            "map_id": "map-transform",
+            "coordinate_frame": "M0",
+            "units": "arbitrary",
+            "root_tiles": [],
+            "tiles": {},
+        },
+    )
+    scene_map = container.catalog.create_resource(
+        project_id,
+        "scene_map",
+        state="ready_metric",
+        name="Map",
+        payload={"manifest": manifest, "coordinate_frame": "M0", "units": "arbitrary"},
+    )
+
+    transform = {"position": [1.0, 2.0, 3.0], "quaternion": [0.0, 0.0, 0.0, 1.0], "scale": 1.25}
+    save = client.post(f"/api/v1/projects/{project_id}/maps/{scene_map['map_id']}/transform", json=transform)
+    assert save.status_code == 200
+    assert save.json()["user_transform"] == transform
+
+    response = client.get(f"/api/v1/projects/{project_id}/maps/{scene_map['map_id']}/point-cloud/manifest")
+    assert response.status_code == 200
+    assert response.json()["userTransform"] == transform

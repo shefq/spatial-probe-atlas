@@ -111,7 +111,11 @@ def map_manifest_contract(request: Request, project_id: str, map_id: str) -> dic
     tiles = {}
     for tile_id, tile in value["tiles"].items():
         tiles[tile_id] = {"id": tile_id, "url": f"/api/v1/projects/{project_id}/maps/{map_id}/point-cloud/tiles/{tile_id}", "bounds": [*tile["bounds"]["min"], *tile["bounds"]["max"]], "point_count": tile["point_count"], "geometric_error": tile["geometric_error_m"], "children": tile["children"], "sha256": tile["sha256"]}
-    return {"schema_version": "1.0.0", "map_id": map_id, "point_count": value["point_count"], "bounds": [*low, *high], "root_tiles": value["root_tiles"], "tiles": tiles, "position_encoding": "quantized_uint16_xyz", "coordinate_frame": "W", "units": "m", "native_format": value["format"]}
+    result = {"schema_version": "1.0.0", "map_id": map_id, "point_count": value["point_count"], "bounds": [*low, *high], "root_tiles": value["root_tiles"], "tiles": tiles, "position_encoding": "quantized_uint16_xyz", "coordinate_frame": "W", "units": "m", "native_format": value["format"]}
+    user_transform = scene_map.get("user_transform")
+    if isinstance(user_transform, dict):
+        result["userTransform"] = user_transform
+    return result
 
 
 @router.get("/projects/{project_id}/probe-calibrations")

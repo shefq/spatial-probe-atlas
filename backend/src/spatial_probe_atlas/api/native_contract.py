@@ -33,7 +33,11 @@ def native_map_manifest(request: Request, project_id: str, map_id: str) -> dict[
     path = container.artifacts.root / info["relative_uri"]
     if not path.is_file() or container.artifacts.sha256(path) != info["sha256"]:
         raise AppError("MAP_ARTIFACT_CORRUPT", "The map manifest is missing or failed its checksum.", status_code=500)
-    return json.loads(path.read_text(encoding="utf-8"))
+    manifest = json.loads(path.read_text(encoding="utf-8"))
+    user_transform = scene_map.get("user_transform")
+    if isinstance(user_transform, dict):
+        manifest["userTransform"] = user_transform
+    return manifest
 
 
 @router.get("/system/logs/tail")

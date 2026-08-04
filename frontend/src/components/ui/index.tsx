@@ -119,12 +119,16 @@ export function Modal({ open, title, description, children, footer, onRequestClo
 }>) {
   const titleId = useId();
   const panelRef = useRef<HTMLDivElement>(null);
+  const onRequestCloseRef = useRef(onRequestClose);
+  useEffect(() => {
+    onRequestCloseRef.current = onRequestClose;
+  }, [onRequestClose]);
   useEffect(() => {
     if (!open) return;
     const previous = document.activeElement as HTMLElement | null;
     panelRef.current?.focus();
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") onRequestClose();
+      if (event.key === "Escape") onRequestCloseRef.current();
       if (event.key !== "Tab" || !panelRef.current) return;
       const items = panelRef.current.querySelectorAll<HTMLElement>("button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex='0']");
       if (!items.length) return;
@@ -140,7 +144,7 @@ export function Modal({ open, title, description, children, footer, onRequestClo
       document.body.classList.remove("modal-open");
       previous?.focus();
     };
-  }, [open, onRequestClose]);
+  }, [open]);
   if (!open) return null;
   return (
     <div className="modal-backdrop" onMouseDown={(event) => { if (event.currentTarget === event.target) onRequestClose(); }} data-testid={testId}>

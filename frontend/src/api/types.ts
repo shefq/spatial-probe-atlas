@@ -119,6 +119,12 @@ export interface CaptureFrame {
   quality?: "good" | "warning" | "rejected";
 }
 
+export interface MapTransform {
+  position: [number, number, number];
+  quaternion: [number, number, number, number];
+  scale: number;
+}
+
 export interface SceneMap {
   id: UUID;
   project_id: UUID;
@@ -133,6 +139,7 @@ export interface SceneMap {
   units?: "arbitrary" | "m";
   size_bytes?: number;
   manifest_url?: string;
+  user_transform?: MapTransform;
   job_id?: UUID;
   created_at: IsoTimestamp;
 }

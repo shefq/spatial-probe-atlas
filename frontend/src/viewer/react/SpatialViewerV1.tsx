@@ -1,7 +1,9 @@
-import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
+import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from "react";
 import { ViewerEngine } from "../engine/ViewerEngineV1";
-import type { PaintDataDelta, RegistrationView, ViewerFilters, ViewerMetrics, ViewerMode, ViewerSelection } from "../engine/types";
+import type { CameraItem, MapTransformData, PaintDataDelta, RegistrationView, TransformMode, ViewerFilters, ViewerMetrics, ViewerMode, ViewerSelection } from "../engine/types";
 import type { TrackingViewFrame } from "../../api/types";
+import { api } from "../../api/client";
+import { useUiStore } from "../../stores";
 import { Button, InlineAlert } from "../../components/ui";
 
 export interface SpatialViewerProps {
@@ -23,6 +25,11 @@ export interface SpatialViewerHandle {
   setRegistration: (registration: RegistrationView) => void;
   resetView: () => void;
   getMetrics: () => ViewerMetrics | null;
+  setTransformMode: (mode: TransformMode) => void;
+  getMapTransform: () => MapTransformData | null;
+  resetMapTransform: () => void;
+  setPointSize: (size: number) => void;
+  setCamSize: (size: number) => void;
 }
 
 export const SpatialViewer = forwardRef<SpatialViewerHandle, SpatialViewerProps>(function SpatialViewerV1(
@@ -31,10 +38,21 @@ export const SpatialViewer = forwardRef<SpatialViewerHandle, SpatialViewerProps>
   const containerRef = useRef<HTMLDivElement>(null);
   const engineRef = useRef<ViewerEngine | null>(null);
   const metricsRef = useRef(onMetrics); metricsRef.current = onMetrics;
+  const pushToast = useUiStore((state) => state.pushToast);
   const [engineReady, setEngineReady] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [generation, setGeneration] = useState(0);
+  const [transformMode, setTransformModeState] = useState<TransformMode>("none");
+  const [pointSize, setPointSizeState] = useState<number>(0.012);
+  const [camSize, setCamSizeState] = useState<number>(0.08);
+  const [framePopup, setFramePopup] = useState<{ cam: CameraItem; imgUrl: string } | null>(null);
+
+  const handleCameraDoubleClick = useCallback((cam: CameraItem) => {
+    if (!cam.name) return;
+    const imgUrl = `/api/v1/projects/${projectId}/frames/${encodeURIComponent(cam.name)}/image`;
+    setFramePopup({ cam, imgUrl });
+  }, [projectId]);
 
   useImperativeHandle(ref, () => ({
     applyTrackingFrame: (frame) => engineRef.current?.applyTrackingFrame(frame),
@@ -42,6 +60,11 @@ export const SpatialViewer = forwardRef<SpatialViewerHandle, SpatialViewerProps>
     setRegistration: (value) => engineRef.current?.setRegistration(value),
     resetView: () => engineRef.current?.resetView(),
     getMetrics: () => engineRef.current?.getMetrics() ?? null,
+    setTransformMode: (m) => { setTransformModeState(m); engineRef.current?.setTransformMode(m); },
+    getMapTransform: () => engineRef.current?.getMapTransform() ?? null,
+    resetMapTransform: () => engineRef.current?.resetMapTransform(),
+    setPointSize: (sz) => { setPointSizeState(sz); engineRef.current?.setPointSize(sz); },
+    setCamSize: (sz) => { setCamSizeState(sz); engineRef.current?.setCamSize(sz); },
   }), []);
 
   useEffect(() => {
@@ -58,6 +81,14 @@ export const SpatialViewer = forwardRef<SpatialViewerHandle, SpatialViewerProps>
       try {
         await engine.initialize(container, { mode, pointBudget: filters?.pointBudget });
         if (cancelled) { engine.dispose(); return; }
+        engine.onCameraSelect = (cam) => {
+          pushToast({
+            kind: "info",
+            title: `📷 ${cam.name ?? "Camera Selected"}`,
+            message: `Pose Position: [${cam.position.map((n) => n.toFixed(3)).join(", ")}]`,
+          });
+        };
+        engine.onCameraDoubleClick = handleCameraDoubleClick;
         engineRef.current = engine; setEngineReady(true);
         observer = new ResizeObserver((entries) => { const size = entries[0]?.contentRect; if (size) engine.resize(size.width, size.height, window.devicePixelRatio || 1); });
         observer.observe(container);
@@ -67,6 +98,11 @@ export const SpatialViewer = forwardRef<SpatialViewerHandle, SpatialViewerProps>
     const metricsTimer = window.setInterval(() => { if (!document.hidden && engineRef.current) metricsRef.current?.(engineRef.current.getMetrics()); }, 500);
     return () => { cancelled = true; cancelAnimationFrame(nextFrame); clearInterval(metricsTimer); observer?.disconnect(); if (engineRef.current === engine) engineRef.current = null; engine.dispose(); };
   }, [generation]);
+
+  // Keep handler current if projectId changes without re-mounting
+  useEffect(() => {
+    if (engineRef.current) engineRef.current.onCameraDoubleClick = handleCameraDoubleClick;
+  }, [handleCameraDoubleClick]);
 
   useEffect(() => {
     if (!engineReady || !engineRef.current || !projectId || !mapId) { if (engineReady) setLoading(false); return; }
@@ -85,10 +121,167 @@ export const SpatialViewer = forwardRef<SpatialViewerHandle, SpatialViewerProps>
   useEffect(() => { if (registration) engineRef.current?.setRegistration(registration); }, [registration]);
   useEffect(() => { if (paintData) engineRef.current?.setPaintData(paintData); }, [paintData]);
 
-  return <div className={`spatial-viewer ${className}`} data-mode={mode} data-testid={`viewer-${mode}`}>
-    <div className="spatial-viewer__canvas" ref={containerRef} />
-    <div className="spatial-viewer__chrome"><span className="viewer-mode">{mode}</span><Button variant="ghost" size="sm" onClick={() => engineRef.current?.resetView()}>Reset view</Button></div>
-    {loading ? <div className="viewer-loading"><span className="spinner" /> Loading spatial data…</div> : null}
-    {error ? <div className="viewer-error"><InlineAlert tone="danger" title="3D view unavailable" action={<Button size="sm" onClick={() => setGeneration((value) => value + 1)}>Retry</Button>}>{error}</InlineAlert></div> : null}
-  </div>;
+  // Close popup on Escape key
+  useEffect(() => {
+    if (!framePopup) return;
+    const handler = (e: KeyboardEvent) => { if (e.key === "Escape") setFramePopup(null); };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [framePopup]);
+
+  const handleSetTransformMode = (m: TransformMode) => {
+    setTransformModeState(m);
+    engineRef.current?.setTransformMode(m);
+  };
+
+  const handlePointChange = (size: number) => {
+    const val = Math.max(0.001, Math.min(0.1, size));
+    setPointSizeState(val);
+    engineRef.current?.setPointSize(val);
+  };
+
+  const handleCamSizeChange = (size: number) => {
+    const val = Math.max(0.01, Math.min(0.3, size));
+    setCamSizeState(val);
+    engineRef.current?.setCamSize(val);
+  };
+
+  const handleSaveTransform = async () => {
+    if (!engineRef.current || !projectId || !mapId) return;
+    const transform = engineRef.current.getMapTransform();
+    try {
+      await api.maps.saveTransform(projectId, mapId, transform);
+      pushToast({ kind: "success", title: "Map transform saved", message: `Scale: ${transform.scale.toFixed(4)}` });
+    } catch {
+      pushToast({ kind: "error", title: "Could not save map transform" });
+    }
+  };
+
+  const handleResetTransform = () => {
+    engineRef.current?.resetMapTransform();
+    pushToast({ kind: "success", title: "Map transform reset" });
+  };
+
+  return (
+    <div className={`spatial-viewer ${className}`} data-mode={mode} data-testid={`viewer-${mode}`}>
+      <div className="spatial-viewer__canvas" ref={containerRef} />
+      <div className="spatial-viewer__chrome">
+        <div className="spatial-viewer__toolbar" style={{ display: "flex", gap: "12px", alignItems: "center", background: "rgba(10, 15, 24, 0.85)", padding: "6px 12px", borderRadius: "8px", backdropFilter: "blur(8px)", border: "1px solid rgba(255, 255, 255, 0.1)" }}>
+          <span className="viewer-mode">{mode}</span>
+
+          <div style={{ display: "flex", alignItems: "center", gap: "6px", fontSize: "12px" }} title="Adjust point cloud point size">
+            <span>Pt Size:</span>
+            <input type="range" min="0.001" max="0.05" step="0.001" value={pointSize}
+              onChange={(e) => handlePointChange(parseFloat(e.target.value))}
+              style={{ width: "60px", accentColor: "#58d6ff" }} />
+            <span style={{ fontFamily: "monospace", minWidth: "40px" }}>{(pointSize * 1000).toFixed(1)}mm</span>
+          </div>
+
+          <div style={{ display: "flex", alignItems: "center", gap: "6px", fontSize: "12px", borderLeft: "1px solid rgba(255,255,255,0.15)", paddingLeft: "10px" }} title="Adjust camera pyramid rendering size">
+            <span>Cam Size:</span>
+            <input type="range" min="0.02" max="0.25" step="0.005" value={camSize}
+              onChange={(e) => handleCamSizeChange(parseFloat(e.target.value))}
+              style={{ width: "60px", accentColor: "#ffea00" }} />
+            <span style={{ fontFamily: "monospace", minWidth: "40px" }}>{(camSize * 1000).toFixed(0)}mm</span>
+          </div>
+
+          {mode === "mapping" || mode === "registration" ? (
+            <div style={{ display: "flex", alignItems: "center", gap: "6px", borderLeft: "1px solid rgba(255,255,255,0.15)", paddingLeft: "10px" }} title="Interactive Map Transform (Hotkeys: T, R, S, Esc)">
+              <span style={{ fontSize: "12px" }}>Transform:</span>
+              <div style={{ display: "flex", gap: "3px" }}>
+                <Button size="sm" variant={transformMode === "translate" ? "primary" : "ghost"} onClick={() => handleSetTransformMode("translate")}>Move (T)</Button>
+                <Button size="sm" variant={transformMode === "rotate" ? "primary" : "ghost"} onClick={() => handleSetTransformMode("rotate")}>Rotate (R)</Button>
+                <Button size="sm" variant={transformMode === "scale" ? "primary" : "ghost"} onClick={() => handleSetTransformMode("scale")}>Scale (S)</Button>
+                <Button size="sm" variant={transformMode === "none" ? "default" : "ghost"} onClick={() => handleSetTransformMode("none")}>Off</Button>
+              </div>
+              {transformMode !== "none" ? (
+                <div style={{ display: "flex", gap: "3px", marginLeft: "4px" }}>
+                  <Button size="sm" variant="primary" onClick={handleSaveTransform}>Save</Button>
+                  <Button size="sm" variant="ghost" onClick={handleResetTransform}>Reset</Button>
+                </div>
+              ) : null}
+            </div>
+          ) : null}
+
+          <Button variant="ghost" size="sm" onClick={() => engineRef.current?.resetView()}>Reset view</Button>
+        </div>
+      </div>
+
+      {loading ? <div className="viewer-loading"><span className="spinner" /> Loading spatial data…</div> : null}
+      {error ? <div className="viewer-error"><InlineAlert tone="danger" title="3D view unavailable" action={<Button size="sm" onClick={() => setGeneration((v) => v + 1)}>Retry</Button>}>{error}</InlineAlert></div> : null}
+
+      {/* Camera frame image lightbox — triggered by double-clicking a pyramid */}
+      {framePopup ? (
+        <div
+          onClick={() => setFramePopup(null)}
+          style={{
+            position: "absolute", inset: 0, zIndex: 100,
+            background: "rgba(0,0,0,0.88)",
+            display: "flex", alignItems: "center", justifyContent: "center",
+            backdropFilter: "blur(6px)",
+            cursor: "zoom-out",
+          }}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              background: "rgba(10,16,28,0.97)",
+              border: "1px solid rgba(255,234,0,0.3)",
+              borderRadius: "12px",
+              padding: "16px",
+              maxWidth: "90vw",
+              maxHeight: "92vh",
+              display: "flex",
+              flexDirection: "column",
+              gap: "12px",
+              boxShadow: "0 24px 64px rgba(0,0,0,0.75)",
+              cursor: "default",
+            }}
+          >
+            {/* Header */}
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "24px" }}>
+              <div>
+                <div style={{ fontSize: "14px", fontWeight: 700, color: "#ffea00", display: "flex", alignItems: "center", gap: "6px" }}>
+                  📷 {framePopup.cam.name}
+                </div>
+                <div style={{ fontSize: "11px", color: "#667788", marginTop: "3px" }}>
+                  Position: [{framePopup.cam.position.map((n) => n.toFixed(4)).join(", ")}]
+                </div>
+              </div>
+              <button
+                onClick={() => setFramePopup(null)}
+                style={{
+                  background: "rgba(255,255,255,0.07)", border: "1px solid rgba(255,255,255,0.15)",
+                  color: "#aabbcc", borderRadius: "6px", padding: "5px 12px",
+                  cursor: "pointer", fontSize: "12px", whiteSpace: "nowrap",
+                }}
+              >✕ Close (Esc)</button>
+            </div>
+
+            {/* Image */}
+            <img
+              src={framePopup.imgUrl}
+              alt={framePopup.cam.name ?? "Camera frame"}
+              style={{
+                maxWidth: "80vw",
+                maxHeight: "78vh",
+                objectFit: "contain",
+                borderRadius: "8px",
+                border: "1px solid rgba(255,255,255,0.07)",
+                background: "#050a12",
+              }}
+              onError={(e) => {
+                const img = e.target as HTMLImageElement;
+                img.style.display = "none";
+                const msg = document.createElement("div");
+                msg.textContent = "⚠ Image not available";
+                msg.style.cssText = "color:#ff7479;padding:32px;font-size:13px";
+                img.parentNode?.insertBefore(msg, img.nextSibling);
+              }}
+            />
+          </div>
+        </div>
+      ) : null}
+    </div>
+  );
 });
