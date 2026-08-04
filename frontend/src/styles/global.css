@@ -215,6 +215,11 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .workflow-grid--mapping, .workflow-grid--registration { grid-template-columns: minmax(0, 1fr) 350px; }
 .workflow-sidebar { min-width: 0; }
 .preview-card { padding-bottom: 0; }.preview-card .card__header { padding-bottom: .2rem; }
+.mapping-preview-card { padding-bottom: 0; }.mapping-preview-card .card__header { padding-bottom: .2rem; }
+.mapping-preview { position: relative; overflow: hidden; margin: 0 -1rem; border-radius: 0 0 var(--radius) var(--radius); background: radial-gradient(circle at center, #142534, #070a0e 65%); }
+.mapping-preview .preview-pane { min-height: 220px; border-right: 0; }
+.preview-pane--compact { min-height: 220px; }
+.camera-placeholder--compact { min-height: 220px; padding: .9rem 1rem; }
 .camera-placeholder, .camera-preview { min-height: 570px; margin: 0 -1rem; border-radius: 0 0 var(--radius) var(--radius); background: radial-gradient(circle at center, #142534, #070a0e 65%); }
 .camera-placeholder { display: grid; align-content: center; justify-items: center; gap: .55rem; color: var(--muted); text-align: center; }
 .camera-placeholder > span { color: var(--cyan); font-size: 3rem; }.camera-placeholder small { max-width: 430px; }

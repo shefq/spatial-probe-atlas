@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { api, errorMessage } from "../api/client";
+import { LatestFrameBuffer, ReconnectingSocket, type BinaryStreamMessage } from "../api/streams";
 import type { CaptureFrame, CaptureSet, JobSnapshot, SceneMap } from "../api/types";
 import { SpatialViewer } from "../viewer/react/SpatialViewer";
 import type { ViewerMetrics } from "../viewer/engine/types";
@@ -34,7 +35,9 @@ export function MappingPage() {
   const [mapName, setMapName] = useState("Reference map A");
   const [computeProfile, setComputeProfile] = useState("auto");
   const [viewerMetrics, setViewerMetrics] = useState<ViewerMetrics | null>(null);
+  const [showCameraPreview, setShowCameraPreview] = useState(true);
   const intervalRef = useRef<number | null>(null);
+  const cameraStatus = useCameraStore((state) => state.status);
 
   const refresh = async (signal?: AbortSignal) => {
     setLoading(true); setError(null);
@@ -158,6 +161,15 @@ export function MappingPage() {
           </Card>
         </div>
         <aside className="workflow-sidebar">
+          {showCameraPreview ? (
+            <Card className="mapping-preview-card" title="Live RGB preview" eyebrow="SIDE FEED" actions={<Button size="sm" onClick={() => setShowCameraPreview(false)}>Hide</Button>}>
+              <MappingCameraPreview active={cameraStatus.state !== "disconnected" && cameraStatus.state !== "error"} />
+            </Card>
+          ) : (
+            <Card className="mapping-preview-card mapping-preview-card--collapsed" title="Live RGB preview" eyebrow="SIDE FEED" actions={<Button size="sm" onClick={() => setShowCameraPreview(true)}>Show</Button>}>
+              <p className="muted">The live camera feed is hidden. Show it again when you want a quick visual check.</p>
+            </Card>
+          )}
           <Card title="Capture quality" eyebrow="ADMISSION">
             <div className="metric-grid"><Metric label="Captured" value={formatCount(selectedSet?.frame_count)} /><Metric label="Accepted" value={formatCount(acceptedFrames)} tone={acceptedFrames >= 20 ? "good" : "warning"} /><Metric label="Excluded" value={formatCount(selectedSet?.excluded_frame_count)} /><Metric label="Coverage" value={selectedSet?.coverage == null ? "—" : `${(selectedSet.coverage * 100).toFixed(0)}%`} /></div>
             {acceptedFrames < 20 ? <InlineAlert tone="warning" title={`${20 - acceptedFrames} more accepted frames required`}>Map creation requires at least 20; 30 or more with varied viewpoints is recommended.</InlineAlert> : acceptedFrames < 30 ? <InlineAlert tone="warning" title="Usable but lightly covered">You can build now; another {30 - acceptedFrames} varied frames are recommended.</InlineAlert> : <InlineAlert tone="success" title="Frame count ready">Review blur, exposure and coverage before reconstruction.</InlineAlert>}
@@ -174,6 +186,49 @@ export function MappingPage() {
       </div>
     </div>
   );
+}
+
+function MappingCameraPreview({ active }: { active: boolean }) {
+  const [rgbUrl, setRgbUrl] = useState<string | null>(null);
+  const [state, setState] = useState("closed");
+  const urls = useRef<string[]>([]);
+
+  useEffect(() => {
+    if (!active) { setState("closed"); return; }
+    const latest = new LatestFrameBuffer<BinaryStreamMessage>();
+    let renderFrame = 0;
+    const stream = new ReconnectingSocket("/ws/v1/camera/preview", {
+      onState: setState,
+      onBinary: (message) => latest.push(message),
+    });
+    stream.connect();
+    stream.send("subscribe", { channels: ["rgb"], quality: "low" });
+    const consume = () => {
+      if (!document.hidden) {
+        const message = latest.take();
+        if (message) {
+          const header = message.header;
+          const encoding = String(header.encoding ?? "jpeg");
+          const mime = encoding.includes("jpeg") || encoding.includes("jpg") ? "image/jpeg" : "image/png";
+          const url = URL.createObjectURL(new Blob([message.payload], { type: mime }));
+          urls.current.push(url);
+          setRgbUrl((previous) => { if (previous) URL.revokeObjectURL(previous); return url; });
+        }
+      }
+      renderFrame = requestAnimationFrame(consume);
+    };
+    renderFrame = requestAnimationFrame(consume);
+    return () => {
+      cancelAnimationFrame(renderFrame);
+      stream.close();
+      urls.current.forEach(URL.revokeObjectURL);
+      urls.current = [];
+      setRgbUrl(null);
+    };
+  }, [active]);
+
+  if (!active) return <div className="mapping-preview"><div className="camera-placeholder camera-placeholder--compact"><span>▣</span><strong>Preview starts after camera connection</strong><small>Enable the camera to show the live RGB feed here.</small></div></div>;
+  return <div className="mapping-preview"><div className="preview-state"><StatusBadge state={state} label={state === "open" ? "Live" : state} /></div><div className="preview-pane preview-pane--compact">{rgbUrl ? <img src={rgbUrl} alt="Live camera RGB preview" /> : <div className="preview-wait"><span className="spinner" /> Waiting for RGB frame…</div>}<span className="preview-label">RGB</span></div></div>;
 }
 
 function JobCard({ job, onRefresh }: { job: JobSnapshot; onRefresh: () => void }) {
