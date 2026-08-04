@@ -216,3 +216,19 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+
+# Spatial Probe Atlas install-local and generated state
+.runtime/
+.venv/
+.env.local
+.setup-complete.json
+.setup-logs/
+.rollback/
+.update-staging/
+.contract-data/
+frontend/dist/
+frontend/node_modules/
+tests/e2e/node_modules/
+tests/e2e/test-results/
+tests/e2e/playwright-report/

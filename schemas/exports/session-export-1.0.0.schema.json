@@ -1,0 +1,120 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://spatial-probe-atlas.local/schemas/session-export-1.0.0.json",
+  "title": "Spatial Probe Atlas JSON session records export",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "export_type",
+    "application_version",
+    "generated_at",
+    "session",
+    "coordinate_frame",
+    "units",
+    "coordinate_system",
+    "filters",
+    "record_counts",
+    "checksums",
+    "points",
+    "paths"
+  ],
+  "properties": {
+    "schema_version": {"const": "1.0.0"},
+    "export_type": {"const": "session_records"},
+    "application_version": {"type": "string", "minLength": 1},
+    "generated_at": {"type": "string", "format": "date-time"},
+    "session": {"$ref": "#/$defs/session"},
+    "coordinate_frame": {"const": "W"},
+    "units": {"const": "m"},
+    "coordinate_system": {"$ref": "#/$defs/coordinate_system"},
+    "filters": {"$ref": "#/$defs/filters"},
+    "record_counts": {"$ref": "#/$defs/counts"},
+    "checksums": {"$ref": "#/$defs/checksums"},
+    "points": {"type": "array", "items": {"type": "object"}},
+    "paths": {"type": "array", "items": {"type": "object"}}
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "revision_ref": {
+      "type": ["object", "null"],
+      "required": ["resource_id", "revision", "content_sha256"],
+      "properties": {
+        "resource_id": {"type": "string", "format": "uuid"},
+        "revision": {"type": "integer", "minimum": 1},
+        "content_sha256": {"$ref": "#/$defs/sha256"},
+        "artifact_sha256": {"$ref": "#/$defs/sha256"}
+      },
+      "additionalProperties": false
+    },
+    "session": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["session_id", "name", "state", "revision", "started_at", "ended_at", "frame_count", "immutable_revision_refs"],
+      "properties": {
+        "session_id": {"type": "string", "format": "uuid"},
+        "name": {"type": ["string", "null"]},
+        "state": {"type": "string"},
+        "revision": {"type": "integer", "minimum": 1},
+        "started_at": {"type": ["string", "null"], "format": "date-time"},
+        "ended_at": {"type": ["string", "null"], "format": "date-time"},
+        "frame_count": {"type": "integer", "minimum": 0},
+        "immutable_revision_refs": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["map", "probe_calibration", "registration"],
+          "properties": {
+            "map": {"$ref": "#/$defs/revision_ref"},
+            "probe_calibration": {"$ref": "#/$defs/revision_ref"},
+            "registration": {"$ref": "#/$defs/revision_ref"}
+          }
+        }
+      }
+    },
+    "coordinate_system": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["frame", "units", "handedness", "transform_convention"],
+      "properties": {
+        "frame": {"const": "W"},
+        "units": {"const": "m"},
+        "handedness": {"const": "right_handed"},
+        "transform_convention": {"type": "string"}
+      }
+    },
+    "filters": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "quality", "from", "to", "include_deleted"],
+      "properties": {
+        "type": {"enum": ["all", "point", "path"]},
+        "quality": {"enum": ["all", "good", "warning", "low", "flagged_low_quality"]},
+        "from": {"type": ["string", "null"], "format": "date-time"},
+        "to": {"type": ["string", "null"], "format": "date-time"},
+        "include_deleted": {"type": "boolean"}
+      }
+    },
+    "counts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["points", "paths", "path_samples", "records"],
+      "properties": {
+        "points": {"type": "integer", "minimum": 0},
+        "paths": {"type": "integer", "minimum": 0},
+        "path_samples": {"type": "integer", "minimum": 0},
+        "records": {"type": "integer", "minimum": 0}
+      }
+    },
+    "checksums": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["filters_sha256", "session_reference_sha256", "points_sha256", "paths_sha256"],
+      "properties": {
+        "filters_sha256": {"$ref": "#/$defs/sha256"},
+        "session_reference_sha256": {"$ref": "#/$defs/sha256"},
+        "points_sha256": {"$ref": "#/$defs/sha256"},
+        "paths_sha256": {"$ref": "#/$defs/sha256"}
+      }
+    }
+  }
+}

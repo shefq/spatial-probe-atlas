@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://spatial-probe-atlas.local/schemas/session-manifest-1.0.0.json",
+  "title": "Spatial Probe Atlas session manifest export",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "export_type",
+    "application_version",
+    "generated_at",
+    "session",
+    "coordinate_frame",
+    "units",
+    "coordinate_system",
+    "filters",
+    "record_counts",
+    "checksums"
+  ],
+  "properties": {
+    "schema_version": {"const": "1.0.0"},
+    "export_type": {"const": "session_manifest"},
+    "application_version": {"type": "string", "minLength": 1},
+    "generated_at": {"type": "string", "format": "date-time"},
+    "session": {"$ref": "session-export-1.0.0.schema.json#/$defs/session"},
+    "coordinate_frame": {"const": "W"},
+    "units": {"const": "m"},
+    "coordinate_system": {"$ref": "session-export-1.0.0.schema.json#/$defs/coordinate_system"},
+    "filters": {"$ref": "session-export-1.0.0.schema.json#/$defs/filters"},
+    "record_counts": {"$ref": "session-export-1.0.0.schema.json#/$defs/counts"},
+    "checksums": {"$ref": "session-export-1.0.0.schema.json#/$defs/checksums"}
+  }
+}

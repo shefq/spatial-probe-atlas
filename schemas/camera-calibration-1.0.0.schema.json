@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://spatial-probe-atlas.local/schemas/camera-calibration-1.0.0.json",
+  "type": "object", "additionalProperties": false,
+  "required": ["schema_version", "calibration_id", "source_format", "camera_model", "image_width", "image_height", "intrinsic_matrix", "distortion_model", "distortion_coefficients", "created_at", "source_file_sha256"],
+  "properties": {
+    "schema_version": {"const": "1.0.0"}, "calibration_id": {"type": "string", "format": "uuid"},
+    "source_format": {"enum": ["opencv_json", "opencv_yaml", "ros_camera_info_yaml", "normalized_json"]}, "camera_model": {"const": "pinhole"},
+    "image_width": {"type": "integer", "minimum": 1}, "image_height": {"type": "integer", "minimum": 1},
+    "intrinsic_matrix": {"type": "array", "minItems": 9, "maxItems": 9, "items": {"type": "number"}},
+    "distortion_model": {"enum": ["none", "plumb_bob", "rational_polynomial", "equidistant"]},
+    "distortion_coefficients": {"type": "array", "items": {"type": "number"}, "maxItems": 14},
+    "created_at": {"type": "string", "format": "date-time"}, "source_file_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+  }
+}

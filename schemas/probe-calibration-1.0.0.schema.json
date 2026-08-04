@@ -1,0 +1,58 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://spatial-probe-atlas.local/schemas/probe-calibration-1.0.0.json",
+  "title": "Spatial Probe Atlas Probe Calibration",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "calibration_id", "name", "created_at", "units", "probe", "blob_detector", "quality", "provenance"],
+  "properties": {
+    "schema_version": {"const": "1.0.0"},
+    "calibration_id": {"type": "string", "format": "uuid"},
+    "name": {"type": "string", "minLength": 1, "maxLength": 120},
+    "created_at": {"type": "string", "format": "date-time"},
+    "units": {"const": "m"},
+    "probe": {
+      "type": "object", "additionalProperties": false,
+      "required": ["model", "marker_frame", "tip_frame", "marker_points_m", "t_marker_tip"],
+      "properties": {
+        "model": {"const": "polaris_5_blob"},
+        "marker_frame": {"const": "M"},
+        "tip_frame": {"const": "P"},
+        "marker_points_m": {"type": "array", "minItems": 5, "maxItems": 5, "items": {"type": "array", "minItems": 3, "maxItems": 3, "items": {"type": "number"}}},
+        "t_marker_tip": {"type": "array", "minItems": 16, "maxItems": 16, "items": {"type": "number"}}
+      }
+    },
+    "blob_detector": {
+      "type": "object", "additionalProperties": false,
+      "required": ["minThreshold", "maxThreshold", "thresholdStep", "minRepeatability", "minDistBetweenBlobs", "filterByColor", "blobColor", "filterByArea", "minArea", "maxArea", "filterByCircularity", "minCircularity", "maxCircularity", "filterByInertia", "minInertiaRatio", "maxInertiaRatio", "filterByConvexity", "minConvexity", "maxConvexity"],
+      "properties": {
+        "minThreshold": {"type": "number", "minimum": 0, "maximum": 255},
+        "maxThreshold": {"type": "number", "minimum": 0, "maximum": 255},
+        "thresholdStep": {"type": "number", "exclusiveMinimum": 0, "maximum": 255},
+        "minRepeatability": {"type": "integer", "minimum": 1},
+        "minDistBetweenBlobs": {"type": "number", "minimum": 0},
+        "filterByColor": {"type": "boolean"}, "blobColor": {"type": "integer", "minimum": 0, "maximum": 255},
+        "filterByArea": {"type": "boolean"}, "minArea": {"type": "number", "minimum": 0}, "maxArea": {"type": "number", "exclusiveMinimum": 0},
+        "filterByCircularity": {"type": "boolean"}, "minCircularity": {"type": "number", "minimum": 0, "maximum": 1}, "maxCircularity": {"type": "number", "minimum": 0, "maximum": 1},
+        "filterByInertia": {"type": "boolean"}, "minInertiaRatio": {"type": "number", "minimum": 0, "maximum": 1}, "maxInertiaRatio": {"type": "number", "minimum": 0, "maximum": 1},
+        "filterByConvexity": {"type": "boolean"}, "minConvexity": {"type": "number", "minimum": 0, "maximum": 1}, "maxConvexity": {"type": "number", "minimum": 0, "maximum": 1}
+      }
+    },
+    "quality": {
+      "type": "object", "additionalProperties": false,
+      "required": ["input_frame_count", "accepted_frame_count", "rms_reprojection_error_px"],
+      "properties": {
+        "input_frame_count": {"type": "integer", "minimum": 0}, "accepted_frame_count": {"type": "integer", "minimum": 0},
+        "rms_reprojection_error_px": {"type": "number", "minimum": 0}, "max_reprojection_error_px": {"type": "number", "minimum": 0},
+        "notes": {"type": "string", "maxLength": 1000}
+      }
+    },
+    "provenance": {
+      "type": "object", "additionalProperties": false, "required": ["application_version", "method"],
+      "properties": {
+        "application_version": {"type": "string"}, "method": {"enum": ["bundle_adjustment", "imported", "manual"]},
+        "source_calibration_id": {"type": ["string", "null"], "format": "uuid"}, "source_project_name": {"type": ["string", "null"], "maxLength": 120}
+      }
+    }
+  }
+}

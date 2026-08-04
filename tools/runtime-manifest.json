@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "python": {
+    "version": "3.11.9",
+    "accepted_major_minor": "3.11",
+    "windows_x64": {
+      "filename": "python-3.11.9-amd64.exe",
+      "url": "https://www.python.org/ftp/python/3.11.9/python-3.11.9-amd64.exe",
+      "sha256": "5ee42c4eee1e6b4464bb23722f90b45303f79442df63083f05322f1785f5fdde",
+      "kind": "installer"
+    }
+  },
+  "node": {
+    "version": "22.20.0",
+    "accepted_major": 22,
+    "windows_x64": {
+      "filename": "node-v22.20.0-win-x64.zip",
+      "url": "https://nodejs.org/dist/v22.20.0/node-v22.20.0-win-x64.zip",
+      "sha256": "bb819d6eb8f5bfda294bbc83a7e4ec6539da67c4233d54b0d655b9248b15e29d",
+      "kind": "zip"
+    }
+  }
+}

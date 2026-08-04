@@ -1,0 +1,30 @@
+import type { ProbeCalibration } from "./types";
+
+export interface ProbeCapture {
+  id: string;
+  project_id: string;
+  state: string;
+  input_frame_count: number;
+  accepted_frame_count: number;
+}
+
+async function json<T>(path: string, body?: Record<string, unknown>): Promise<T> {
+  const response = await fetch(`/api/v1${path}`, {
+    method: "POST",
+    credentials: "same-origin",
+    headers: { "Content-Type": "application/json", "Idempotency-Key": crypto.randomUUID() },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  if (!response.ok) {
+    const payload = await response.json().catch(() => null) as { error?: { message?: string; suggested_action?: string } } | null;
+    throw new Error([payload?.error?.message ?? `Request failed (${response.status}).`, payload?.error?.suggested_action].filter(Boolean).join(" "));
+  }
+  return response.json() as Promise<T>;
+}
+
+export const probeWorkflowApi = {
+  createCapture: (projectId: string) => json<ProbeCapture>(`/projects/${projectId}/probe-captures`, { source: "camera" }),
+  captureFrame: (projectId: string, captureId: string) => json<ProbeCapture>(`/projects/${projectId}/probe-captures/${captureId}/frames:capture`),
+  createCalibration: (projectId: string, captureId: string, name: string) =>
+    json<ProbeCalibration>(`/projects/${projectId}/probe-calibrations`, { probe_capture_id: captureId, name }),
+};

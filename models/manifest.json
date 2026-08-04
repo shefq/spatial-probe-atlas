@@ -1,0 +1,45 @@
+{
+  "schema_version": "1.0.0",
+  "profiles": {
+    "cuda_aliked_lightglue_v1": {
+      "dependencies": {
+        "torch": "2.11.0+cu128",
+        "kornia": "0.8.3",
+        "pycolmap": "4.1.1"
+      },
+      "parameters": {
+        "feature_extractor": "ALIKED",
+        "aliked_model": "aliked-n16",
+        "max_keypoints": 4096,
+        "matcher": "LightGlue",
+        "depth_confidence": 0.95,
+        "width_confidence": 0.99,
+        "max_attention_layers": 9,
+        "reconstruction": "pycolmap_incremental"
+      }
+    }
+  },
+  "assets": [
+    {
+      "id": "aliked-n16",
+      "filename": "aliked-n16.pth",
+      "url": "https://raw.githubusercontent.com/Shiaoming/ALIKED/683d7c65197395c0b3f01ebe76e1084a27e73a65/models/aliked-n16.pth",
+      "sha256": "5be8704840ed662d9d8c561bf7279c222092674e7eb05fd0feab94899e9d82f2",
+      "size_bytes": 2738091,
+      "license": "BSD-3-Clause",
+      "license_url": "https://github.com/Shiaoming/ALIKED/blob/683d7c65197395c0b3f01ebe76e1084a27e73a65/LICENSE",
+      "profiles": ["cuda"]
+    },
+    {
+      "id": "aliked-lightglue-v0.1-arxiv",
+      "filename": "aliked_lightglue.pth",
+      "url": "https://github.com/cvg/LightGlue/releases/download/v0.1_arxiv/aliked_lightglue.pth",
+      "sha256": "d975e965b105311a6143194852297dff4f02aea5cc2e10cecfed966ca0e22503",
+      "size_bytes": 47632827,
+      "license": "Apache-2.0",
+      "license_url": "https://github.com/cvg/LightGlue/blob/c91eb892b799fa607523879d18f9ec4fe76194a5/LICENSE",
+      "profiles": ["cuda"]
+    }
+  ],
+  "notes": "CPU SIFT and replay require no model. CUDA assets are conditional, downloaded only during setup/update, and verified again immediately before model deserialization."
+}
