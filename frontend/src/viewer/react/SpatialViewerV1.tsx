@@ -137,13 +137,13 @@ export const SpatialViewer = forwardRef<SpatialViewerHandle, SpatialViewerProps>
   };
 
   const handlePointChange = (size: number) => {
-    const val = Math.max(0.001, Math.min(0.1, size));
+    const val = Math.max(0.001, Math.min(0.15, size));
     setPointSizeState(val);
     engineRef.current?.setPointSize(val);
   };
 
   const handleCamSizeChange = (size: number) => {
-    const val = Math.max(0.01, Math.min(0.3, size));
+    const val = Math.max(0.01, Math.min(0.5, size));
     setCamSizeState(val);
     engineRef.current?.setCamSize(val);
   };
@@ -173,7 +173,7 @@ export const SpatialViewer = forwardRef<SpatialViewerHandle, SpatialViewerProps>
 
           <div style={{ display: "flex", alignItems: "center", gap: "6px", fontSize: "12px" }} title="Adjust point cloud point size">
             <span>Pt Size:</span>
-            <input type="range" min="0.001" max="0.05" step="0.001" value={pointSize}
+            <input type="range" min="0.001" max="0.15" step="0.001" value={pointSize}
               onChange={(e) => handlePointChange(parseFloat(e.target.value))}
               style={{ width: "60px", accentColor: "#58d6ff" }} />
             <span style={{ fontFamily: "monospace", minWidth: "40px" }}>{(pointSize * 1000).toFixed(1)}mm</span>
@@ -181,7 +181,7 @@ export const SpatialViewer = forwardRef<SpatialViewerHandle, SpatialViewerProps>
 
           <div style={{ display: "flex", alignItems: "center", gap: "6px", fontSize: "12px", borderLeft: "1px solid rgba(255,255,255,0.15)", paddingLeft: "10px" }} title="Adjust camera pyramid rendering size">
             <span>Cam Size:</span>
-            <input type="range" min="0.02" max="0.25" step="0.005" value={camSize}
+            <input type="range" min="0.02" max="0.5" step="0.005" value={camSize}
               onChange={(e) => handleCamSizeChange(parseFloat(e.target.value))}
               style={{ width: "60px", accentColor: "#ffea00" }} />
             <span style={{ fontFamily: "monospace", minWidth: "40px" }}>{(camSize * 1000).toFixed(0)}mm</span>

@@ -82,7 +82,7 @@ export class ViewerEngine implements Contract {
     this.transformPivot.add(this.map);
     this.map.add(this.camerasGroup);
     this.scene.add(this.transformPivot, this.registration, this.tracking, this.paint, this.helpers, this.transformControls.getHelper(), new AmbientLight(0xa7b9cd, 1.3), new DirectionalLight(0xffffff, 1.7));
-    const grid = new GridHelper(1, 20, 0x29415a, 0x162332); grid.material.opacity = .42; grid.material.transparent = true; this.helpers.add(grid, new AxesHelper(.08));
+    const grid = new GridHelper(10, 50, 0x29415a, 0x162332); grid.material.opacity = .42; grid.material.transparent = true; this.helpers.add(grid, new AxesHelper(.08));
     this.renderer.domElement.addEventListener("webglcontextlost", this.onLost); this.renderer.domElement.addEventListener("webglcontextrestored", this.onRestored);
 
     // Camera pyramid click picking
