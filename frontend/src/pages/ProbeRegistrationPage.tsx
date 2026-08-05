@@ -1,8 +1,8 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { api, errorMessage } from "../api/client";
 import { probeWorkflowApi, type ProbeCapture } from "../api/probeWorkflows";
-import { ReconnectingSocket } from "../api/streams";
+import { parseBinaryMessage, ReconnectingSocket } from "../api/streams";
 import type { CalibrationValidation, ProbeCalibration, ProbeTestMetrics, Registration } from "../api/types";
 import { BlobDetectorTuningModal } from "../features/probe/BlobDetectorTuningModal";
 import { SpatialViewer } from "../viewer/react/SpatialViewer";
@@ -31,6 +31,8 @@ export function ProbeRegistrationPage() {
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [overlayUrl, setOverlayUrl] = useState<string | null>(null);
+  const overlayObjectUrls = useRef<string[]>([]);
 
   const refresh = async (signal?: AbortSignal) => {
     setLoading(true); setError(null);
@@ -52,6 +54,29 @@ export function ProbeRegistrationPage() {
     stream.connect(); stream.send("subscribe", { calibration_id: selectedCalibrationId });
     return () => stream.close();
   }, [cameraReady, projectId, selectedCalibrationId]);
+  useEffect(() => {
+    if (!cameraReady || !selectedCalibrationId || tuningOpen) {
+      setOverlayUrl(null);
+      return;
+    }
+    const stream = new ReconnectingSocket(`/ws/v1/projects/${projectId}/probe-tuning`, {
+      onBinary: (message) => {
+        const kind = String(message.header.kind ?? "");
+        if (kind !== "overlay") return;
+        const url = URL.createObjectURL(new Blob([message.payload], { type: "image/png" }));
+        overlayObjectUrls.current.push(url);
+        setOverlayUrl((prev) => { if (prev) URL.revokeObjectURL(prev); return url; });
+      },
+    });
+    stream.connect();
+    stream.send("subscribe", { calibration_id: selectedCalibrationId });
+    return () => {
+      stream.close();
+      overlayObjectUrls.current.forEach(URL.revokeObjectURL);
+      overlayObjectUrls.current = [];
+      setOverlayUrl(null);
+    };
+  }, [cameraReady, projectId, selectedCalibrationId, tuningOpen]);
 
   const selectedCalibration = calibrations.find((item) => item.id === selectedCalibrationId);
   const selectedRegistration = registrations.find((item) => item.id === selectedRegistrationId);
@@ -146,6 +171,11 @@ export function ProbeRegistrationPage() {
         </div>
         <aside className="workflow-sidebar">
           <Card title="Probe tracking test" eyebrow="LIVE RECORD3D" actions={<StatusBadge state={testState} />}>
+            <div className="tracking-feed-preview">
+              <div>
+                {overlayUrl ? <img src={overlayUrl} alt="Detected overlay" /> : <span><span className="spinner" /> {cameraReady ? "Waiting for frame…" : "Waiting for camera"}</span>}
+              </div>
+            </div>
             <div className="probe-test-visual"><div className="probe-dot-pattern">{Array.from({ length: 5 }).map((_, index) => <span key={index} className={index < probeMetrics.inliers ? "is-found" : ""} />)}</div><strong>{probeMetrics.tracked ? "5/5 tracked" : "Probe not fully tracked"}</strong><small>{probeMetrics.rejection_reason ?? probeMetrics.exposure_feedback ?? (cameraReady ? "Keep all markers in view." : "Connect Record3D or replay to test.")}</small></div>
             <div className="metric-grid"><Metric label="Blobs" value={probeMetrics.blob_count} /><Metric label="Candidates" value={probeMetrics.candidate_count} /><Metric label="Error" value={probeMetrics.reprojection_error_px == null ? "—" : `${probeMetrics.reprojection_error_px.toFixed(2)} px`} /></div>
             <Button variant="primary" disabled={!selectedCalibration || !cameraReady} onClick={() => setTuningOpen(true)}>Can’t track the probe?</Button>

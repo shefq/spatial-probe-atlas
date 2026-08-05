@@ -20,8 +20,8 @@ const numericFields: Array<{
   { key: "minRepeatability", label: "Minimum repeatability", min: 1, max: 100, step: 1, integer: true },
   { key: "minDistBetweenBlobs", label: "Minimum blob distance (px)", min: 0, max: 1000, step: 0.5 },
   { key: "blobColor", label: "Blob colour (0 black, 255 white)", min: 0, max: 255, step: 1, integer: true, group: "filterByColor" },
-  { key: "minArea", label: "Minimum area (px²)", min: 0, step: 1, group: "filterByArea" },
-  { key: "maxArea", label: "Maximum area (px²)", min: 0.01, step: 1, group: "filterByArea" },
+  { key: "minArea", label: "Minimum area (px²)", min: 0, max: 5000, step: 1, group: "filterByArea" },
+  { key: "maxArea", label: "Maximum area (px²)", min: 0.01, max: 10000, step: 1, group: "filterByArea" },
   { key: "minCircularity", label: "Minimum circularity", min: 0, max: 1, step: 0.01, group: "filterByCircularity" },
   { key: "maxCircularity", label: "Maximum circularity", min: 0, max: 1, step: 0.01, group: "filterByCircularity" },
   { key: "minInertiaRatio", label: "Minimum inertia ratio", min: 0, max: 1, step: 0.01, group: "filterByInertia" },
@@ -184,7 +184,44 @@ export function BlobDetectorTuningModal({ open, projectId, calibration, onSaved,
 }
 
 function NumericSetting({ field, value, error, disabled, onChange }: { field: typeof numericFields[number]; value: number; error?: string; disabled?: boolean; onChange: (value: number) => void }) {
-  return <Field label={field.label} error={error}><input className="input" type="number" data-testid={`blob-${field.key}`} value={Number.isFinite(value) ? value : ""} min={field.min} max={field.max} step={field.step} disabled={disabled} onChange={(event) => { const number = Number(event.target.value); onChange(field.integer ? Math.round(number) : number); }} /></Field>;
+  const minVal = field.min ?? 0;
+  const maxVal = field.max ?? (field.key === "minArea" ? 5000 : field.key === "maxArea" ? 10000 : 100);
+  const numVal = Number.isFinite(value) ? value : minVal;
+
+  return (
+    <Field label={field.label} error={error}>
+      <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+        <input
+          type="range"
+          min={minVal}
+          max={maxVal}
+          step={field.step}
+          value={numVal}
+          disabled={disabled}
+          onChange={(event) => {
+            const number = Number(event.target.value);
+            onChange(field.integer ? Math.round(number) : number);
+          }}
+          style={{ flex: 1, accentColor: "#58d6ff", cursor: disabled ? "not-allowed" : "pointer" }}
+        />
+        <input
+          className="input"
+          type="number"
+          data-testid={`blob-${field.key}`}
+          value={Number.isFinite(value) ? value : ""}
+          min={field.min}
+          max={field.max}
+          step={field.step}
+          disabled={disabled}
+          onChange={(event) => {
+            const number = Number(event.target.value);
+            onChange(field.integer ? Math.round(number) : number);
+          }}
+          style={{ width: "75px", textAlign: "right" }}
+        />
+      </div>
+    </Field>
+  );
 }
 
 function DiagnosticView({ title, url }: { title: string; url?: string }) {
