@@ -21,6 +21,7 @@ from spatial_probe_atlas.api.schemas import (
     FrameImportRequest,
     FrameUpdate,
     MapCreate,
+    MapTransformUpdate,
     ProjectCreate,
     ProjectUpdate,
 )
@@ -260,6 +261,17 @@ def create_map(request: Request, project_id: str, body: MapCreate) -> dict[str, 
 @router.get("/projects/{project_id}/maps/{map_id}")
 def get_map(request: Request, project_id: str, map_id: str) -> dict[str, Any]:
     return request.app.state.container.catalog.get_resource(project_id, "scene_map", map_id)
+
+
+@router.post("/projects/{project_id}/maps/{map_id}/transform")
+def save_map_transform(request: Request, project_id: str, map_id: str, body: MapTransformUpdate) -> dict[str, Any]:
+    container = request.app.state.container
+    scene_map = container.catalog.get_resource(project_id, "scene_map", map_id)
+    if not scene_map:
+        raise AppError("MAP_NOT_FOUND", "The requested map does not exist.", status_code=404)
+    payload_patch = {"user_transform": body.model_dump()}
+    container.catalog.update_resource(project_id, "scene_map", map_id, payload_patch=payload_patch)
+    return {"status": "ok", "user_transform": body.model_dump()}
 
 
 @router.post("/projects/{project_id}/maps/{map_id}/activate")

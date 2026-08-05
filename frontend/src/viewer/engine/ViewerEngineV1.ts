@@ -9,7 +9,7 @@ import type { PaintedPath, PaintedPoint, TrackingViewFrame } from "../../api/typ
 import { decodeV1Tile, normalizeManifest, selectV1Tiles } from "../point-cloud/v1";
 import type { CameraItem, MapTransformData, PaintDataDelta, PointCloudSource, RegistrationView, TransformMode, ViewerEngine as Contract, ViewerFilters, ViewerMetrics, ViewerMode, ViewerOptions, ViewerSelection } from "./types";
 
-export const T_V_W = new Matrix4().set(1,0,0,0, 0,0,-1,0, 0,1,0,0, 0,0,0,1);
+export const T_V_W = new Matrix4().set(1, 0, 0, 0, 0, 0, -1, 0, 0, 1, 0, 0, 0, 0, 0, 1);
 export function worldToViewer(value: [number, number, number]): Vector3 { return new Vector3(...value).applyMatrix4(T_V_W); }
 
 function disposeGroup(group: Group): void {
@@ -52,6 +52,7 @@ export class ViewerEngine implements Contract {
   private readonly paint = new Group();
   private readonly helpers = new Group();
   private readonly paintObjects = new Map<string, Mesh | Line>();
+  private initialMapTransform = new Matrix4();
   private filters: ViewerFilters = { showMap: true, showFrames: true, showProbe: true, showBoard: true, showPoints: true, showPaths: true, pointSize: .012, pointBudget: 3_000_000 };
   public onCameraSelect?: (camera: CameraItem) => void;
   public onCameraDoubleClick?: ((camera: CameraItem) => void) | null;
@@ -83,7 +84,7 @@ export class ViewerEngine implements Contract {
     this.scene.add(this.transformPivot, this.registration, this.tracking, this.paint, this.helpers, this.transformControls.getHelper(), new AmbientLight(0xa7b9cd, 1.3), new DirectionalLight(0xffffff, 1.7));
     const grid = new GridHelper(1, 20, 0x29415a, 0x162332); grid.material.opacity = .42; grid.material.transparent = true; this.helpers.add(grid, new AxesHelper(.08));
     this.renderer.domElement.addEventListener("webglcontextlost", this.onLost); this.renderer.domElement.addEventListener("webglcontextrestored", this.onRestored);
-    
+
     // Camera pyramid click picking
     const raycaster = new Raycaster();
     const mouse = new Vector2();
@@ -187,6 +188,7 @@ export class ViewerEngine implements Contract {
       );
       mapTransform.multiply(s);
     }
+    this.initialMapTransform.copy(mapTransform);
     this.map.matrixAutoUpdate = false;
     this.map.matrix.copy(mapTransform);
     this.map.matrix.decompose(this.map.position, this.map.quaternion, this.map.scale);
@@ -237,11 +239,11 @@ export class ViewerEngine implements Contract {
     if (!cameras || !cameras.length) return;
     const w = 0.06, h = 0.045, d = 0.10;
     const vertices = new Float32Array([
-      0,0,0,  w,h,d,   0,0,0, -w,h,d,
-      0,0,0, -w,-h,d,  0,0,0,  w,-h,d,
-      w,h,d, -w,h,d,   -w,h,d, -w,-h,d,
-      -w,-h,d, w,-h,d, w,-h,d,  w,h,d,
-      0, -h, d,  0, -h - 0.03, d
+      0, 0, 0, w, h, d, 0, 0, 0, -w, h, d,
+      0, 0, 0, -w, -h, d, 0, 0, 0, w, -h, d,
+      w, h, d, -w, h, d, -w, h, d, -w, -h, d,
+      -w, -h, d, w, -h, d, w, -h, d, w, h, d,
+      0, -h, d, 0, -h - 0.03, d
     ]);
     const camGeom = new BufferGeometry();
     camGeom.setAttribute("position", new BufferAttribute(vertices, 3));
@@ -291,7 +293,7 @@ export class ViewerEngine implements Contract {
 
   getMapTransform(): MapTransformData {
     this.map.updateMatrixWorld(true);
-    const matrix = this.map.matrixWorld.clone();
+    const matrix = this.map.matrixWorld.clone().multiply(this.initialMapTransform.clone().invert());
     const position = new Vector3();
     const quaternion = new Quaternion();
     const scale = new Vector3();
@@ -307,10 +309,10 @@ export class ViewerEngine implements Contract {
     this.transformPivot.position.set(0, 0, 0);
     this.transformPivot.quaternion.set(0, 0, 0, 1);
     this.transformPivot.scale.set(1, 1, 1);
-    this.map.position.set(0, 0, 0);
-    this.map.quaternion.set(0, 0, 0, 1);
-    this.map.scale.set(1, 1, 1);
+    this.map.matrix.copy(this.initialMapTransform);
+    this.map.matrix.decompose(this.map.position, this.map.quaternion, this.map.scale);
     this.transformPivot.updateMatrixWorld(true);
+    this.map.updateMatrixWorld(true);
     this.prevScale.set(1, 1, 1);
   }
 
@@ -359,7 +361,7 @@ export class ViewerEngine implements Contract {
   }
   resize(width: number, height: number, dpr: number): void { if (!this.camera || !this.renderer || width < 1 || height < 1) return; this.camera.aspect = width / height; this.camera.updateProjectionMatrix(); this.dpr = Math.min(Math.max(.75, dpr), 2); this.renderer.setPixelRatio(this.dpr); this.renderer.setSize(width, height, false); }
   getMetrics(): ViewerMetrics { return { visiblePoints: this.map.visible ? this.loadedPoints : 0, loadedPoints: this.loadedPoints, loadedTiles: this.loadedTiles, drawCalls: this.renderer?.info.render.calls ?? 0, frameTimeMs: this.frameTime, pixelRatio: this.dpr, contextLost: this.contextLost }; }
-  resetView(): void { if (!this.camera || !this.controls) return; this.camera.position.set(.45, .35, .55); this.controls.target.set(0,0,0); this.controls.update(); }
+  resetView(): void { if (!this.camera || !this.controls) return; this.camera.position.set(.45, .35, .55); this.controls.target.set(0, 0, 0); this.controls.update(); }
   dispose(): void {
     if (this.disposed) return; this.disposed = true; this.controller?.abort(); cancelAnimationFrame(this.frame); this.controls?.dispose(); this.transformControls?.dispose();
     if (this.onKeyDown) window.removeEventListener("keydown", this.onKeyDown);
