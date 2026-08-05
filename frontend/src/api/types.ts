@@ -183,7 +183,7 @@ export interface JobSnapshot {
   error?: {
     code: string;
     message?: string;
-    details?: { defaulted_fields?: string[]; [key: string]: unknown };
+    details?: { defaulted_fields?: string[];[key: string]: unknown };
     retryable?: boolean;
     suggested_action?: string;
   } | null;

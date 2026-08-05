@@ -124,6 +124,7 @@ export const api = {
       return { accepted: value.items.filter((item) => item.included).length, rejected: value.items.filter((item) => !item.included).length, capture_set: value.capture_set };
     },
     setFrameIncluded: (projectId: string, setId: string, frameId: string, included: boolean) => request<CaptureFrame>(`/projects/${projectId}/capture-sets/${setId}/frames/${frameId}`, { method: "PATCH", body: JSON.stringify({ included }) }),
+    deleteFrame: (projectId: string, setId: string, frameId: string) => request<void>(`/projects/${projectId}/capture-sets/${setId}/frames/${frameId}`, { method: "DELETE" }),
   },
   maps: {
     list: (projectId: string, signal?: AbortSignal) => request<SceneMap[]>(`/projects/${projectId}/maps`, { signal }),

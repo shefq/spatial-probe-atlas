@@ -253,6 +253,8 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .frame-thumb { position: relative; overflow: hidden; min-height: 78px; padding: 0; border: 1px solid var(--line); border-radius: 5px; background: #080d12; color: var(--muted); cursor: pointer; }
 .frame-thumb img { width: 100%; height: 58px; object-fit: cover; }.frame-thumb__placeholder { display: grid; height: 58px; place-items: center; font: .78rem/1 monospace; }
 .frame-thumb small { display: block; padding: .2rem; font-size: .52rem; }.frame-thumb.is-excluded { opacity: .35; filter: grayscale(1); }
+.frame-delete { position: absolute; top: 4px; left: 4px; z-index: 10; display: flex; align-items: center; justify-content: center; width: 18px; height: 18px; border-radius: 50%; background: rgba(220, 38, 38, 0.85); color: #ffffff; font-size: 13px; font-weight: bold; line-height: 1; box-shadow: 0 1px 4px rgba(0,0,0,0.5); transition: transform 0.15s ease, background-color 0.15s ease; }
+.frame-delete:hover { background: rgba(239, 68, 68, 1); transform: scale(1.15); }
 .quality-dot { position: absolute; top: 4px; right: 4px; width: 7px; height: 7px; border-radius: 50%; background: var(--green); box-shadow: 0 0 6px var(--green); }.quality-dot--warning { background: var(--amber); }.quality-dot--rejected { background: var(--red); }
 .job-stage { display: flex; justify-content: space-between; margin-bottom: .5rem; font-size: .7rem; text-transform: capitalize; }
 .capture-progress { display: grid; grid-template-columns: auto 1fr; align-items: center; gap: .8rem; margin-bottom: .7rem; }.capture-progress > div { display: grid; }.capture-progress strong { font: 1.4rem/1 monospace; color: var(--cyan); }.capture-progress span { color: var(--muted); font-size: .58rem; }

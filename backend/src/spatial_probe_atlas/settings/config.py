@@ -23,7 +23,7 @@ class Settings:
     bootstrap_token: str | None = None
     allow_test_host: bool = False
     frontend_dist: Path | None = None
-    min_mapping_frames: int = 20
+    min_mapping_frames: int = 7
     disk_reserve_bytes: int = 10 * 1024**3
     telemetry_rate_hz: float = 2.0
 
@@ -40,7 +40,7 @@ class Settings:
             bootstrap_token=os.environ.get("SPA_BOOTSTRAP_TOKEN") or None,
             allow_test_host=os.environ.get("SPA_ALLOW_TEST_HOST", "").strip().lower() in {"1", "true", "yes"},
             frontend_dist=frontend,
-            min_mapping_frames=max(3, int(os.environ.get("SPA_MIN_MAPPING_FRAMES", "20"))),
+            min_mapping_frames=max(3, int(os.environ.get("SPA_MIN_MAPPING_FRAMES", "7"))),
         )
 
     def ensure_directories(self) -> None:
