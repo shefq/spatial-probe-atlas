@@ -71,6 +71,7 @@ export interface MapTransformData {
 export interface CameraItem {
   id?: string;
   name?: string;
+  frame_id?: string;
   position: [number, number, number];
   quaternion?: [number, number, number, number];
 }

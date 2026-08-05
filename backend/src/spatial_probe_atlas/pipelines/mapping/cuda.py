@@ -467,10 +467,15 @@ def build_cuda_point_cloud(
             try:
                 C = img.projection_center() if callable(img.projection_center) else img.projection_center
                 cfw = img.cam_from_world() if callable(img.cam_from_world) else img.cam_from_world
-                qx, qy, qz, qw = cfw.rotation.quat
+                rot = cfw.rotation() if callable(cfw.rotation) else cfw.rotation
+                qx, qy, qz, qw = rot.quat
+                idx = int(Path(img.name).stem.split("-")[-1])
+                frame_obj = frames[idx] if 0 <= idx < len(frames) else None
                 cameras_list.append({
                     "id": str(img_id),
                     "name": img.name,
+                    "frame_id": frame_obj.get("id") if isinstance(frame_obj, dict) else None,
+                    "sequence": frame_obj.get("sequence") if isinstance(frame_obj, dict) else idx,
                     "position": [float(C[0]), float(C[1]), float(C[2])],
                     "quaternion": [float(-qx), float(-qy), float(-qz), float(qw)],
                 })

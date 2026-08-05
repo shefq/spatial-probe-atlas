@@ -49,8 +49,10 @@ export const SpatialViewer = forwardRef<SpatialViewerHandle, SpatialViewerProps>
   const [framePopup, setFramePopup] = useState<{ cam: CameraItem; imgUrl: string } | null>(null);
 
   const handleCameraDoubleClick = useCallback((cam: CameraItem) => {
-    if (!cam.name) return;
-    const imgUrl = `/api/v1/projects/${projectId}/frames/${encodeURIComponent(cam.name)}/image`;
+    if (!cam.name && !cam.frame_id) return;
+    const imgUrl = cam.frame_id
+      ? `/api/v1/projects/${projectId}/frames/by-id/${cam.frame_id}/image`
+      : `/api/v1/projects/${projectId}/frames/${encodeURIComponent(cam.name!)}/image`;
     setFramePopup({ cam, imgUrl });
   }, [projectId]);
 

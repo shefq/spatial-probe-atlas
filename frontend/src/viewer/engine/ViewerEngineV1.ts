@@ -187,7 +187,10 @@ export class ViewerEngine implements Contract {
       );
       mapTransform.multiply(s);
     }
-    this.map.matrixAutoUpdate = true;
+    this.map.matrixAutoUpdate = false;
+    this.map.matrix.copy(mapTransform);
+    this.map.matrix.decompose(this.map.position, this.map.quaternion, this.map.scale);
+    this.map.updateMatrixWorld(true);
     const domainFromViewer = this.transformPivot.matrixWorld.clone().multiply(mapTransform).invert();
     const position = this.camera!.position.clone().applyMatrix4(domainFromViewer);
     const queue = selectV1Tiles(manifest, [position.x, position.y, position.z], this.budget);
@@ -212,6 +215,7 @@ export class ViewerEngine implements Contract {
       const camList: CameraItem[] = rawCamsArray.map((c: any, i: number) => ({
         id: c.id ?? `cam-${i + 1}`,
         name: c.name ?? `Camera Frame #${i + 1}`,
+        frame_id: c.frame_id ?? c.frameId,
         position: c.position as [number, number, number],
         quaternion: c.quaternion as [number, number, number, number] | undefined,
         lookAt: c.lookAt as [number, number, number] | undefined,
