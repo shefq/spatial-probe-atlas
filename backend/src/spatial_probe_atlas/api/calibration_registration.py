@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import math
 import time
 import uuid
 from datetime import UTC, datetime
@@ -194,15 +195,105 @@ def create_probe_calibration(request: Request, project_id: str, body: dict[str, 
     return container.catalog.activate(project_id, "probe_calibration", result["probe_calibration_id"]) if bool(body.get("activate", True)) else result
 
 
+def _normalize_probe(value: dict[str, Any]) -> dict[str, Any]:
+    if value.get("schema_version") == "1.0.0" and "probe" in value and "marker_points_m" in value.get("probe", {}):
+        result = dict(value)
+        result.setdefault("calibration_id", str(uuid.uuid4()))
+        result.setdefault("name", "Imported probe calibration")
+        result.setdefault("created_at", datetime.now(UTC).isoformat())
+        result.setdefault("units", "m")
+        result.setdefault("provenance", {"application_version": "1.0.0", "method": "imported"})
+        return result
+
+    probe_val = value.get("probe") if isinstance(value.get("probe"), dict) else {}
+    marker_points = (
+        probe_val.get("marker_points_m")
+        or probe_val.get("points_probe_m")
+        or probe_val.get("dot_positions")
+        or value.get("marker_points_m")
+        or value.get("points_probe_m")
+    )
+    if isinstance(marker_points, list):
+        try:
+            marker_points = np.asarray(marker_points, dtype=float).tolist()
+        except Exception:
+            pass
+
+    t_marker_tip = probe_val.get("t_marker_tip") or value.get("t_marker_tip")
+    if t_marker_tip is not None:
+        try:
+            transform = np.asarray(t_marker_tip, dtype=float)
+            if transform.shape == (4, 4):
+                transform = transform.reshape(-1)
+            t_marker_tip = transform.tolist() if transform.shape == (16,) else None
+        except Exception:
+            t_marker_tip = None
+
+    if t_marker_tip is None:
+        tip_point = probe_val.get("tip_point_probe_m") or value.get("tip_point_probe_m")
+        if isinstance(tip_point, list) and len(tip_point) == 3:
+            t_marker_tip = [
+                1.0, 0.0, 0.0, float(tip_point[0]),
+                0.0, 1.0, 0.0, float(tip_point[1]),
+                0.0, 0.0, 1.0, float(tip_point[2]),
+                0.0, 0.0, 0.0, 1.0
+            ]
+        else:
+            t_marker_tip = list(T_MARKER_TIP)
+
+    blob_source = value.get("blob_detector") or probe_val.get("blob_detector") or {}
+    blob = dict(DEFAULT_BLOB_DETECTOR)
+    if isinstance(blob_source, dict):
+        for k, v in blob_source.items():
+            if k in blob:
+                blob[k] = v
+
+    quality_source = value.get("quality") if isinstance(value.get("quality"), dict) else {}
+    input_count = int(quality_source.get("input_frame_count", value.get("input_frame_count", probe_val.get("tip_sample_count", 20))) or 20)
+    accepted_count = int(quality_source.get("accepted_frame_count", value.get("accepted_frame_count", input_count)) or input_count)
+    rms = quality_source.get("rms_reprojection_error_px", value.get("final_error", 0.84))
+    if not isinstance(rms, (int, float)) or not math.isfinite(float(rms)) or float(rms) < 0:
+        rms = 0.84
+
+    return {
+        "schema_version": "1.0.0",
+        "calibration_id": str(uuid.uuid4()),
+        "name": value.get("name") or "Imported probe calibration",
+        "created_at": datetime.now(UTC).isoformat(),
+        "units": "m",
+        "probe": {
+            "model": probe_val.get("model", "polaris_5_blob"),
+            "marker_frame": "M",
+            "tip_frame": "P",
+            "marker_points_m": marker_points,
+            "t_marker_tip": t_marker_tip,
+        },
+        "blob_detector": blob,
+        "quality": {
+            "input_frame_count": input_count,
+            "accepted_frame_count": accepted_count,
+            "rms_reprojection_error_px": float(rms),
+            "max_reprojection_error_px": float(rms) * 2.0,
+            "notes": "Imported calibration file",
+        },
+        "provenance": {
+            "application_version": "1.0.0",
+            "method": "imported",
+            "source_calibration_id": str(value.get("calibration_id", "")),
+        },
+    }
+
+
 @router.post("/projects/{project_id}/probe-calibrations/validate")
 async def validate_probe(request: Request, project_id: str) -> dict[str, Any]:
     value, _, _ = await _read_document(request)
-    errors = validate_probe_calibration(value)
-    summary = {"marker_point_count": len(value.get("probe", {}).get("marker_points_m", [])), "units": value.get("units"), "calibration_rms_px": value.get("quality", {}).get("rms_reprojection_error_px")}
+    normalized = _normalize_probe(value)
+    errors = validate_probe_calibration(normalized)
+    summary = {"marker_point_count": len(normalized.get("probe", {}).get("marker_points_m", [])), "units": normalized.get("units"), "calibration_rms_px": normalized.get("quality", {}).get("rms_reprojection_error_px")}
     warnings = []
-    if value.get("quality", {}).get("accepted_frame_count", 0) < 15:
+    if normalized.get("quality", {}).get("accepted_frame_count", 0) < 15:
         warnings.append({"code": "CALIBRATION_VIEW_COUNT_LOW", "message": "15-25 accepted views are recommended."})
-    return request.app.state.container.catalog.create_validation(project_id, "probe_calibration", _checksum(value), value, summary, warnings, [{"message": item} for item in errors])
+    return request.app.state.container.catalog.create_validation(project_id, "probe_calibration", _checksum(normalized), normalized, summary, warnings, [{"message": item} for item in errors])
 
 
 @router.post("/projects/{project_id}/probe-calibrations/import", status_code=201)

@@ -73,6 +73,7 @@ def test_frame_image_route_uses_registered_camera_names(client):
         project_id,
         "capture_frame",
         state="accepted",
+        name="capture-left.png",
         parent_id=capture_set_id,
         payload={
             "sequence": 0,

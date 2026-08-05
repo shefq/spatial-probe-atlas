@@ -1,0 +1,60 @@
+{
+  "schema_version": 1,
+  "calibration_type": "five_point_probe",
+  "units": "metres",
+  "created_unix_s": 1784904399.9712603,
+  "board_calibration_used": "JOINT_OPTIMIZATION",
+  "probe": {
+    "model": "five_unlabelled_dark_dots",
+    "points_probe_m": [
+      [
+        -0.005,
+        0.0,
+        0.0
+      ],
+      [
+        -0.01452,
+        -0.0405,
+        0.045
+      ],
+      [
+        -0.02374,
+        0.04466,
+        0.03484
+      ],
+      [
+        -0.00668,
+        -0.00067,
+        -0.05895
+      ],
+      [
+        -0.01947,
+        0.03509,
+        -0.0247
+      ]
+    ],
+    "tip_point_probe_m": [
+      -0.020237401946780982,
+      0.014805363528282729,
+      -0.09416774905228695
+    ],
+    "tip_calibration_target": "centre_of_marker_9",
+    "tip_sample_count": 17,
+    "tip_sample_spread_rms_m": 0.0,
+    "blob_detector": {
+      "filterByColor": true,
+      "blobColor": 0,
+      "filterByArea": true,
+      "minArea": 50.0,
+      "maxArea": 1261.0,
+      "filterByCircularity": true,
+      "minCircularity": 0.56,
+      "filterByInertia": true,
+      "minInertiaRatio": 0.1,
+      "filterByConvexity": false,
+      "minThreshold": 61.0,
+      "maxThreshold": 169.0,
+      "thresholdStep": 17.0
+    }
+  }
+}
