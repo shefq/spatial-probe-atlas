@@ -187,10 +187,46 @@ def _probe_metrics(container: Any, settings: dict[str, Any]) -> dict[str, Any]:
     return {"blob_count": result["candidate_count"], "candidate_count": result["candidate_count"], "inliers": 5 if result["tracked"] else 0, "tracked": result["tracked"], "reprojection_error_px": 0.91 if result["tracked"] else None, "rejection_reason": None if result["tracked"] else "; ".join(result.get("errors", [])) or "five_marker_correspondence_not_found", "exposure_feedback": "Exposure is usable", "keypoints": result.get("keypoints", []), "simulated": result.get("simulated", False)}
 
 
-async def _send_probe_images(websocket: WebSocket, frame: Any, sequence: int) -> int:
+async def _send_probe_images(websocket: WebSocket, frame: Any, sequence: int, metrics: dict[str, Any] | None = None, settings: dict[str, Any] | None = None) -> int:
     image = np.frombuffer(frame.rgb, dtype=np.uint8).reshape(frame.height, frame.width, 3)
     gray = image.mean(axis=2).astype(np.uint8)
-    for kind, value in (("raw", image), ("binary", np.where(gray > 128, 255, 0).astype(np.uint8)), ("overlay", image)):
+
+    min_thresh = float((settings or {}).get("minThreshold", 61))
+    max_thresh = float((settings or {}).get("maxThreshold", 169))
+    mid_thresh = (min_thresh + max_thresh) / 2.0
+    blob_color = int((settings or {}).get("blobColor", 0))
+
+    if blob_color == 0:
+        binary = np.where(gray < mid_thresh, np.uint8(255), np.uint8(0))
+    else:
+        binary = np.where(gray > mid_thresh, np.uint8(255), np.uint8(0))
+
+    overlay = image.copy()
+    keypoints = (metrics or {}).get("keypoints", [])
+    tracked = bool((metrics or {}).get("tracked", False))
+
+    try:
+        import cv2
+        for idx, kp in enumerate(keypoints):
+            cx = int(round(float(kp.get("x", 0))))
+            cy = int(round(float(kp.get("y", 0))))
+            diameter = float(kp.get("diameter", 12.0))
+            radius = max(4, int(round(diameter / 2.0)))
+
+            if tracked and idx < 5:
+                color = (0, 255, 0)
+                label = f"P{idx}"
+            else:
+                color = (255, 140, 0)
+                label = f"B{idx}"
+
+            cv2.circle(overlay, (cx, cy), radius, color, 2, cv2.LINE_AA)
+            cv2.circle(overlay, (cx, cy), 2, color, -1, cv2.LINE_AA)
+            cv2.putText(overlay, label, (cx + radius + 4, max(12, cy - 2)), cv2.FONT_HERSHEY_SIMPLEX, 0.45, color, 1, cv2.LINE_AA)
+    except Exception:
+        pass
+
+    for kind, value in (("raw", image), ("binary", binary), ("overlay", overlay)):
         payload = _png(value)
         await _send_binary(websocket, {"protocol_version": 1, "type": "probe.diagnostic_image", "seq": sequence, "timestamp": datetime.now(UTC).isoformat(), "kind": kind, "encoding": "png", "width": frame.width, "height": frame.height}, payload)
         sequence += 1
@@ -230,7 +266,7 @@ async def probe_tuning(websocket: WebSocket, project_id: str) -> None:
             await websocket.send_json(_envelope("probe.tuning_result", sequence, metrics))
             sequence += 1
             if container.camera.latest_frame is not None:
-                sequence = await _send_probe_images(websocket, container.camera.latest_frame, sequence)
+                sequence = await _send_probe_images(websocket, container.camera.latest_frame, sequence, metrics, settings)
     except WebSocketDisconnect:
         pass
 

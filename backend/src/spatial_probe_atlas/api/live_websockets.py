@@ -90,11 +90,12 @@ async def probe_tuning(websocket: WebSocket, project_id: str) -> None:
                         settings = dict(draft)
             except TimeoutError:
                 pass
-            await websocket.send_json(_envelope("probe.tuning_result", sequence, _tuning_metrics(container, settings)))
+            metrics = _tuning_metrics(container, settings)
+            await websocket.send_json(_envelope("probe.tuning_result", sequence, metrics))
             sequence += 1
             now = time.monotonic()
             if container.camera.latest_frame is not None and now - last_images >= 1.0:
-                sequence = await _send_probe_images(websocket, container.camera.latest_frame, sequence)
+                sequence = await _send_probe_images(websocket, container.camera.latest_frame, sequence, metrics, settings)
                 last_images = now
     except (WebSocketDisconnect, AppError):
         pass
