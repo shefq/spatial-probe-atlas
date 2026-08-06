@@ -143,12 +143,24 @@ async def capture_probe_frames(request: Request, project_id: str, capture_id: st
     count = max(1, min(int((body or {}).get("count", 1)), 100))
     if container.camera.project_id != project_id or container.camera.state != "ready":
         raise AppError("CAMERA_NOT_READY", "Connect and verify the project camera first.", status_code=409)
+
+    blob_detector = dict(DEFAULT_BLOB_DETECTOR)
+    project = container.catalog.get_project(project_id)
+    cal_id = (body or {}).get("calibration_id") or project.get("active_probe_calibration_id")
+    if cal_id:
+        try:
+            cal = container.catalog.get_resource(project_id, "probe_calibration", cal_id)
+            if cal.get("blob_detector"):
+                blob_detector.update(cal["blob_detector"])
+        except Exception:
+            pass
+
     items = []
     previous = -1
     for _ in range(count):
         frame = await container.camera.wait_for_frame(previous, timeout=2.0)
         previous = frame.sequence
-        diagnostics = detect_blobs(frame.rgb, frame.width, frame.height, DEFAULT_BLOB_DETECTOR)
+        diagnostics = detect_blobs(frame.rgb, frame.width, frame.height, blob_detector)
         # The replay marker fixture supplies deterministic five-point correspondences to the
         # calibration solver independently from its textured mapping preview.
         if getattr(container.camera.adapter, "adapter_name", "") == "replay":

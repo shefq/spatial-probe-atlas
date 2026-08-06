@@ -241,7 +241,13 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .mapping-capture-strip { display: flex; align-items: center; flex-wrap: wrap; gap: .65rem; margin-bottom: .8rem; padding: .7rem; border: 1px solid var(--line); border-radius: 8px; background: #0d141c; }
 .capture-source { display: flex; align-items: center; gap: .55rem; margin-right: auto; }.capture-source .select { width: 240px; }
 .mapping-main, .registration-main { min-width: 0; }
-.viewer-card { overflow: hidden; padding-bottom: 0; }.viewer-card > .spatial-viewer, .viewer-card > .viewer-empty { margin: 0 -1rem; }
+.viewer-card { overflow: hidden; padding-bottom: 0; }.viewer-card > .spatial-viewer, .viewer-card > .viewer-empty, .viewer-card > .registration-workspace-layout { margin: 0 -1rem; }
+.registration-workspace-layout { display: grid; grid-template-columns: minmax(0, 1fr) 310px; background: #070a0e; min-height: 540px; }
+.registration-viewer-wrap { position: relative; min-width: 0; }
+.registration-viewer-wrap > .spatial-viewer, .registration-viewer-wrap > .viewer-empty { margin: 0; height: 100%; min-height: 540px; }
+.registration-record3d-widget { display: flex; flex-direction: column; gap: .65rem; padding: .85rem; border-left: 1px solid var(--line); background: #080d12; overflow-y: auto; }
+.record3d-widget-header { display: flex; align-items: center; justify-content: space-between; gap: .5rem; padding-bottom: .45rem; border-bottom: 1px solid var(--line); }
+.record3d-widget-header strong { font-size: .8rem; }
 .spatial-viewer { position: relative; overflow: hidden; min-height: 540px; background: #070a0e; isolation: isolate; }
 .spatial-viewer__canvas { position: absolute; inset: 0; }.spatial-viewer__canvas canvas { display: block; width: 100%; height: 100%; }
 .spatial-viewer__chrome { position: absolute; z-index: 3; top: .65rem; left: .65rem; display: flex; align-items: center; gap: .5rem; }
@@ -266,7 +272,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .registration-step.is-active, .registration-step.is-complete { opacity: 1; }.registration-step.is-active > span { border-color: var(--cyan); color: var(--cyan); }.registration-step.is-complete > span { border-color: #27765f; background: #133b30; color: var(--green); }
 .probe-test-visual { display: grid; justify-items: center; gap: .45rem; margin-bottom: .8rem; padding: 1rem; border: 1px solid var(--line); border-radius: 7px; background: radial-gradient(circle, #152632, #080e14); text-align: center; }.probe-test-visual small { max-width: 250px; }
 .probe-dot-pattern { position: relative; width: 110px; height: 95px; }.probe-dot-pattern span { position: absolute; width: 16px; height: 16px; border: 2px solid #536271; border-radius: 50%; }.probe-dot-pattern span.is-found { border-color: var(--green); background: rgb(97 226 177 / .18); box-shadow: 0 0 12px rgb(97 226 177 / .35); }.probe-dot-pattern span:nth-child(1) { top: 40px; left: 46px; }.probe-dot-pattern span:nth-child(2) { top: 4px; left: 8px; }.probe-dot-pattern span:nth-child(3) { top: 10px; right: 4px; }.probe-dot-pattern span:nth-child(4) { bottom: 2px; left: 21px; }.probe-dot-pattern span:nth-child(5) { right: 14px; bottom: 10px; }
-.tracking-feed-preview { overflow: hidden; margin-bottom: .8rem; border: 1px solid var(--line); border-radius: 7px; background: #05080b; }.tracking-feed-preview > div { display: grid; height: 170px; place-items: center; }.tracking-feed-preview img { width: 100%; height: 100%; object-fit: contain; }.tracking-feed-preview > div > span { display: flex; align-items: center; gap: .4rem; color: var(--muted); font-size: .65rem; }
+.tracking-feed-preview { overflow: hidden; margin-bottom: .8rem; border: 1px solid var(--line); border-radius: 7px; background: #05080b; width: 100%; aspect-ratio: 4 / 3; transition: aspect-ratio .2s ease; }.tracking-feed-preview > div { display: flex; align-items: center; justify-content: center; width: 100%; height: 100%; }.tracking-feed-preview img { width: 100%; height: 100%; object-fit: contain; display: block; }.tracking-feed-preview > div > span { display: flex; align-items: center; gap: .4rem; color: var(--muted); font-size: .65rem; }
 .calibration-list { display: grid; gap: .4rem; max-height: 190px; overflow: auto; }.calibration-list button { display: flex; width: 100%; align-items: center; justify-content: space-between; gap: .5rem; padding: .55rem; border: 1px solid var(--line); border-radius: 6px; background: #0a1118; color: var(--text); text-align: left; cursor: pointer; }.calibration-list button.is-selected { border-color: #327c96; background: #102632; }.calibration-list button > span { display: grid; gap: .2rem; min-width: 0; }.calibration-list small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 .tuning-layout { display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(440px, .85fr); gap: 1rem; }
@@ -282,7 +288,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .session-link { display: flex; align-items: center; justify-content: space-between; gap: 1rem; padding: .6rem; border-bottom: 1px solid var(--line); color: var(--text-soft); }.session-link > span:first-child { display: grid; gap: .15rem; }
 .live-layout { display: grid; grid-template-columns: minmax(0, 1fr) 370px; gap: .8rem; margin-bottom: .8rem; }
 .live-viewer-wrap { position: relative; overflow: hidden; min-height: 660px; border: 1px solid var(--line); border-radius: 9px; background: #05080b; }.live-viewer-wrap .spatial-viewer { min-height: 658px; }
-.live-image-overlay { position: absolute; z-index: 5; top: .7rem; right: .7rem; overflow: hidden; width: 220px; height: 150px; border: 1px solid #40566a; border-radius: 7px; background: #080d12; box-shadow: var(--shadow); }.live-image-overlay img { width: 100%; height: 100%; object-fit: cover; }.live-image-overlay > span { display: grid; height: 100%; place-items: center; color: var(--muted); font-size: .65rem; }.live-image-overlay > div { position: absolute; right: .3rem; bottom: .3rem; }
+.live-image-overlay { position: absolute; z-index: 5; top: .7rem; right: .7rem; overflow: hidden; width: 220px; aspect-ratio: 4 / 3; border: 1px solid #40566a; border-radius: 7px; background: #080d12; box-shadow: var(--shadow); transition: aspect-ratio .2s ease; }.live-image-overlay img { width: 100%; height: 100%; object-fit: contain; display: block; }.live-image-overlay > span { display: grid; height: 100%; place-items: center; color: var(--muted); font-size: .65rem; }.live-image-overlay > div { position: absolute; right: .3rem; bottom: .3rem; }
 .live-quality-ribbon { position: absolute; z-index: 5; right: .7rem; bottom: .7rem; left: .7rem; display: flex; flex-wrap: wrap; gap: .45rem; padding: .45rem; border: 1px solid #293b4c; border-radius: 7px; background: rgb(6 11 16 / .82); backdrop-filter: blur(8px); }
 .live-controls { min-width: 0; }.live-controls .card { padding: .8rem; }.live-controls .card + .card { margin-top: .65rem; }.live-lifecycle .button { flex: 1; }
 .coordinate-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: .35rem; margin-bottom: .6rem; }.coordinate-grid span { display: grid; gap: .25rem; padding: .55rem .4rem; border: 1px solid #284052; border-radius: 6px; background: #091219; color: var(--cyan); font: 700 .76rem/1 monospace; text-align: center; }.coordinate-grid small { font: 600 .55rem/1 Inter, sans-serif; }
@@ -315,6 +321,8 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   .app-topbar__status .status:first-child { display: none; }
   .project-header__metrics span:nth-child(2) { display: none; }
   .workflow-grid--camera, .workflow-grid--mapping, .workflow-grid--registration, .live-layout, .review-layout, .settings-grid { grid-template-columns: 1fr; }
+  .registration-workspace-layout { grid-template-columns: 1fr; }
+  .registration-record3d-widget { border-left: 0; border-top: 1px solid var(--line); }
   .workflow-sidebar { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .7rem; }.workflow-sidebar .card + .card { margin-top: 0; }
   .live-controls { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .7rem; }.live-controls .card + .card { margin-top: 0; }
   .live-controls .card:nth-child(3) { grid-row: span 2; }

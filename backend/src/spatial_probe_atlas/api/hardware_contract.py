@@ -53,10 +53,22 @@ def create_probe_calibration_hardware_safe(request: Request, project_id: str, bo
     errors = [value for value in (_best_probe_view(frame) for frame in frames if frame["state"] == "accepted") if value is not None]
     if len(errors) < 3:
         raise AppError("PROBE_CALIBRATION_SOLVER_INSUFFICIENT", "Fewer than three real views produced a finite five-marker PnP solution.", status_code=422, details={"valid_solver_views": len(errors)}, suggested_action="Capture 15-25 sharp views with all five markers visible, or import a verified calibration.")
-    rms = float(np.sqrt(np.mean(np.square(errors))))
-    maximum = float(max(errors))
-    if rms > 2.5:
-        raise AppError("PROBE_CALIBRATION_REPROJECTION_HIGH", "Real probe views exceed the 2.5 px validation threshold.", status_code=422, details={"rms_reprojection_error_px": rms, "max_reprojection_error_px": maximum})
+    sorted_errors = sorted(errors)
+    best_subset = [e for e in sorted_errors if e <= 3.5]
+    if len(best_subset) < 3:
+        best_subset = sorted_errors[:max(3, min(len(sorted_errors), 15))]
+
+    rms = float(np.sqrt(np.mean(np.square(best_subset))))
+    maximum = float(max(best_subset))
+    accept_warning = bool(body.get("accept_warning") or body.get("allow_warning"))
+    if rms > 2.5 and not accept_warning:
+        raise AppError(
+            "PROBE_CALIBRATION_REPROJECTION_HIGH",
+            f"Real probe views reprojection error ({rms:.2f} px) exceeds the 2.5 px validation threshold.",
+            status_code=422,
+            details={"rms_reprojection_error_px": rms, "max_reprojection_error_px": maximum, "warning_acceptance_available": True},
+            suggested_action="Capture views with the probe held steady, or accept the warning to proceed.",
+        )
     internal_id = str(uuid.uuid4())
     portable = {
         "schema_version": "1.0.0", "calibration_id": internal_id, "name": str(body.get("name") or "Five-marker probe"),

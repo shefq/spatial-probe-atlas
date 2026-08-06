@@ -235,5 +235,23 @@ function LiveImageOverlay({ active, tracking }: { active: boolean; tracking: Tra
     stream.connect(); stream.send("subscribe", { channels: ["rgb"], quality: "low", overlay: true });
     return () => { stream.close(); if (current) URL.revokeObjectURL(current); setUrl(null); };
   }, [active]);
-  return <div className="live-image-overlay">{url ? <img src={url} alt="Live camera tracking overlay" /> : <span>Camera overlay</span>}<div><StatusBadge state={tracking?.probe_state ?? "lost"} label={tracking?.probe_state === "tracked" ? "Probe visible" : "Probe lost"} /></div></div>;
+  return (
+    <div className="live-image-overlay">
+      {url ? (
+        <img
+          src={url}
+          alt="Live camera tracking overlay"
+          onLoad={(e) => {
+            const img = e.currentTarget;
+            if (img.naturalWidth && img.naturalHeight) {
+              img.parentElement?.style.setProperty("aspect-ratio", `${img.naturalWidth} / ${img.naturalHeight}`);
+            }
+          }}
+        />
+      ) : (
+        <span>Camera overlay</span>
+      )}
+      <div><StatusBadge state={tracking?.probe_state ?? "lost"} label={tracking?.probe_state === "tracked" ? "Probe visible" : "Probe lost"} /></div>
+    </div>
+  );
 }
