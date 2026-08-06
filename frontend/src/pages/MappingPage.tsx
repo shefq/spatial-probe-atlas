@@ -3,7 +3,7 @@ import { useNavigate, useParams } from "react-router-dom";
 import { api, errorMessage } from "../api/client";
 import { LatestFrameBuffer, ReconnectingSocket, type BinaryStreamMessage } from "../api/streams";
 import type { CaptureFrame, CaptureSet, JobSnapshot, SceneMap } from "../api/types";
-import { SpatialViewer } from "../viewer/react/SpatialViewer";
+import { SpatialViewer, type SpatialViewerHandle } from "../viewer/react/SpatialViewer";
 import type { ViewerMetrics } from "../viewer/engine/types";
 import { Button, Card, EmptyState, Field, InlineAlert, Metric, ProgressBar, Segmented, Skeleton, StatusBadge, TextInput } from "../components/ui";
 import { useCameraStore, useDiagnosticsStore, useJobStore, useProjectStore, useUiStore } from "../stores";
@@ -36,7 +36,9 @@ export function MappingPage() {
   const [computeProfile, setComputeProfile] = useState("auto");
   const [viewerMetrics, setViewerMetrics] = useState<ViewerMetrics | null>(null);
   const [showCameraPreview, setShowCameraPreview] = useState(true);
+  const [viewMode, setViewMode] = useState<"points" | "mesh">("points");
   const intervalRef = useRef<number | null>(null);
+  const viewerRef = useRef<SpatialViewerHandle>(null);
   const cameraStatus = useCameraStore((state) => state.status);
 
   const refresh = async (signal?: AbortSignal) => {
@@ -63,7 +65,7 @@ export function MappingPage() {
   const activeJob = useMemo(() => {
     const mapJobId = maps.find((map) => map.id === selectedMapId)?.job_id;
     if (mapJobId && jobStore[mapJobId]) return jobStore[mapJobId];
-    return Object.values(jobStore).find((job) => job.owner_project_id === projectId && job.type.includes("map") && !["completed", "cancelled", "failed"].includes(job.state));
+    return Object.values(jobStore).find((job) => job.owner_project_id === projectId && ["mapping", "mesh"].includes(job.type) && !["completed", "cancelled", "failed"].includes(job.state));
   }, [jobStore, maps, projectId, selectedMapId]);
   useEffect(() => {
     if (!activeJob?.id || ["completed", "cancelled", "failed"].includes(activeJob.state)) return;
@@ -139,6 +141,16 @@ export function MappingPage() {
   const acceptedFrames = selectedSet?.accepted_frame_count ?? 0;
   const canBuild = acceptedFrames >= 20 && !activeJob;
 
+  useEffect(() => {
+    if (!viewerRef.current || !selectedMapId || !projectId) return;
+    if (viewMode === "mesh") {
+      viewerRef.current.loadMesh(projectId, selectedMapId).catch(console.error);
+      viewerRef.current.setMeshVisibility(true);
+    } else {
+      viewerRef.current.setMeshVisibility(false);
+    }
+  }, [viewMode, projectId, selectedMapId]);
+
   return (
     <div className="page page--workflow">
       <header className="page-heading"><div><div className="eyebrow">STEP 2 · REFERENCE SPACE</div><h1>Scene Capture & Mapping</h1><p>Acquire a well-covered frame set, build a durable SfM map, then inspect and activate it.</p></div><div className="page-heading__actions">{selectedMap?.active ? <Button variant="primary" onClick={() => navigate(`/projects/${projectId}/registration`)}>Continue to registration →</Button> : null}</div></header>
@@ -152,8 +164,8 @@ export function MappingPage() {
       </div>
       <div className="workflow-grid workflow-grid--mapping">
         <div className="mapping-main">
-          <Card className="viewer-card" title="Spatial map inspection" eyebrow={selectedMap ? `${selectedMap.name} · ${selectedMap.state}` : "NO MAP SELECTED"} actions={selectedMap ? <><select className="select select--compact" value={selectedMapId} onChange={(event) => setSelectedMapId(event.target.value)}>{maps.map((map) => <option key={map.id} value={map.id}>{map.name}{map.active ? " · active" : ""}</option>)}</select>{!selectedMap.active && selectedMap.state.startsWith("ready") ? <Button size="sm" busy={busy} onClick={() => void activateMap(selectedMap)}>Activate</Button> : null}</> : null}>
-            {selectedMap ? <SpatialViewer mode="mapping" projectId={projectId} mapId={selectedMap.id} onMetrics={setViewerMetrics} /> : <div className="viewer-empty"><EmptyState icon="⌖" title="Your point cloud will appear here">Capture at least 20 accepted frames, then build the CPU or CUDA reconstruction.</EmptyState></div>}
+          <Card className="viewer-card" title="Spatial map inspection" eyebrow={selectedMap ? `${selectedMap.name} · ${selectedMap.state}` : "NO MAP SELECTED"} actions={selectedMap ? <><Segmented label="View mode" value={viewMode} options={[{ value: "points", label: "Points" }, { value: "mesh", label: "Mesh" }]} onChange={(v) => setViewMode(v as any)} /><select className="select select--compact" value={selectedMapId} onChange={(event) => setSelectedMapId(event.target.value)}>{maps.map((map) => <option key={map.id} value={map.id}>{map.name}{map.active ? " · active" : ""}</option>)}</select>{!selectedMap.active && selectedMap.state.startsWith("ready") ? <Button size="sm" busy={busy} onClick={() => void activateMap(selectedMap)}>Activate</Button> : null}</> : null}>
+            {selectedMap ? <SpatialViewer ref={viewerRef} mode="mapping" projectId={projectId} mapId={selectedMap.id} onMetrics={setViewerMetrics} filters={{ showMap: true, showFrames: true, showPoints: viewMode === "points" }} /> : <div className="viewer-empty"><EmptyState icon="⌖" title="Your point cloud will appear here">Capture at least 20 accepted frames, then build the CPU or CUDA reconstruction.</EmptyState></div>}
             <div className="viewer-metrics"><span>Map {formatCount(selectedMap?.point_count)} pts</span><span>Visible {formatCount(viewerMetrics?.visiblePoints)} pts</span><span>Tiles {viewerMetrics?.loadedTiles ?? 0}</span><span>{viewerMetrics?.frameTimeMs.toFixed(1) ?? "—"} ms</span></div>
           </Card>
           <Card title="Frame browser" eyebrow="INCREMENTAL QUALITY" actions={<span className="muted">Click a frame to exclude or restore</span>}>
@@ -181,9 +193,23 @@ export function MappingPage() {
             <p className="muted">The existing active map stays unchanged until a validated new map is explicitly activated.</p>
           </Card>
           {activeJob ? <JobCard job={activeJob} onRefresh={() => void refresh()} /> : null}
-          {selectedMap ? <Card title="Map result" eyebrow="VALIDATION"><div className="metric-grid"><Metric label="Points" value={formatCount(selectedMap.point_count)} /><Metric label="Registered" value={formatCount(selectedMap.registered_image_count)} /><Metric label="Reprojection" value={selectedMap.reprojection_error_px == null ? "—" : `${selectedMap.reprojection_error_px.toFixed(2)} px`} /><Metric label="Size" value={formatBytes(selectedMap.size_bytes)} /></div><StatusBadge state={selectedMap.active ? "active" : selectedMap.state} /></Card> : null}
+          {selectedMap ? <Card title="Map result" eyebrow="VALIDATION"><div className="metric-grid"><Metric label="Points" value={formatCount(selectedMap.point_count)} /><Metric label="Registered" value={formatCount(selectedMap.registered_image_count)} /><Metric label="Reprojection" value={selectedMap.reprojection_error_px == null ? "—" : `${selectedMap.reprojection_error_px.toFixed(2)} px`} /><Metric label="Size" value={formatBytes(selectedMap.size_bytes)} /></div><StatusBadge state={selectedMap.active ? "active" : selectedMap.state} />
+            {selectedMap.effective_compute_profile?.includes("cuda") ? <OpenMvsRunner projectId={projectId} mapId={selectedMap.id} mapState={selectedMap.state} busy={busy} setBusy={setBusy} refresh={refresh} /> : null}
+          </Card> : null}
         </aside>
       </div>
+    </div>
+  );
+}
+
+function OpenMvsRunner({ projectId, mapId, mapState, busy, setBusy, refresh }: { projectId: string, mapId: string, mapState: string, busy: boolean, setBusy: (busy: boolean) => void, refresh: () => Promise<void> }) {
+  const pushToast = useUiStore((state) => state.pushToast);
+  const [binPath, setBinPath] = useState(localStorage.getItem("spa_openmvs_bin") ?? "");
+  const canRun = mapState.startsWith("ready") || mapState === "active";
+  return (
+    <div className="button-row" style={{ marginTop: 12, display: "flex", flexDirection: "column", gap: 8 }}>
+      <Field label="OpenMVS Bin Path (Optional)" hint="e.g. C:\OpenMVS\bin"><TextInput value={binPath} onChange={(e) => { setBinPath(e.target.value); localStorage.setItem("spa_openmvs_bin", e.target.value); }} /></Field>
+      <Button size="sm" variant="primary" busy={busy} disabled={!canRun} onClick={async () => { setBusy(true); try { await api.maps.generateMesh(projectId, mapId, binPath); pushToast({ kind: "success", title: "Mesh generation queued" }); await refresh(); } catch (error) { pushToast({ kind: "error", title: "Action failed", message: errorMessage(error) }); } finally { setBusy(false); } }}>Generate textured mesh (OpenMVS)</Button>
     </div>
   );
 }

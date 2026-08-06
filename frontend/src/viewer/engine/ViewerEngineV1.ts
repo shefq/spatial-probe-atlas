@@ -1,10 +1,12 @@
 import {
-  AmbientLight, AxesHelper, Box3, BoxGeometry, BufferAttribute, BufferGeometry, Color, DirectionalLight, GridHelper, Group,
+  AmbientLight, AxesHelper, Box3, BoxGeometry, BufferAttribute, BufferGeometry, Color, DirectionalLight, DoubleSide, GridHelper, Group,
   Line, LineBasicMaterial, LineSegments, Matrix4, Mesh, MeshBasicMaterial, PerspectiveCamera, Points, PointsMaterial, Quaternion, Raycaster, Scene,
   SphereGeometry, SRGBColorSpace, Vector2, Vector3, WebGLRenderer,
 } from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { TransformControls } from "three/addons/controls/TransformControls.js";
+import { MTLLoader } from "three/addons/loaders/MTLLoader.js";
+import { OBJLoader } from "three/addons/loaders/OBJLoader.js";
 import type { PaintedPath, PaintedPoint, TrackingViewFrame } from "../../api/types";
 import { decodeV1Tile, normalizeManifest, selectV1Tiles } from "../point-cloud/v1";
 import type { CameraItem, MapTransformData, PaintDataDelta, PointCloudSource, RegistrationView, TransformMode, ViewerEngine as Contract, ViewerFilters, ViewerMetrics, ViewerMode, ViewerOptions, ViewerSelection } from "./types";
@@ -45,6 +47,7 @@ export class ViewerEngine implements Contract {
   private loadedTiles = 0;
   private controller: AbortController | null = null;
   private readonly map = new Group();
+  private readonly objMesh = new Group();
   private readonly transformPivot = new Group();
   private readonly camerasGroup = new Group();
   private readonly registration = new Group();
@@ -80,7 +83,7 @@ export class ViewerEngine implements Contract {
       }
     });
     this.transformPivot.add(this.map);
-    this.map.add(this.camerasGroup);
+    this.map.add(this.camerasGroup, this.objMesh);
     this.scene.add(this.transformPivot, this.registration, this.tracking, this.paint, this.helpers, this.transformControls.getHelper(), new AmbientLight(0xa7b9cd, 1.3), new DirectionalLight(0xffffff, 1.7));
     const grid = new GridHelper(10, 50, 0x29415a, 0x162332); grid.material.opacity = .42; grid.material.transparent = true; this.helpers.add(grid, new AxesHelper(.08));
     this.renderer.domElement.addEventListener("webglcontextlost", this.onLost); this.renderer.domElement.addEventListener("webglcontextrestored", this.onRestored);
@@ -362,6 +365,55 @@ export class ViewerEngine implements Contract {
   resize(width: number, height: number, dpr: number): void { if (!this.camera || !this.renderer || width < 1 || height < 1) return; this.camera.aspect = width / height; this.camera.updateProjectionMatrix(); this.dpr = Math.min(Math.max(.75, dpr), 2); this.renderer.setPixelRatio(this.dpr); this.renderer.setSize(width, height, false); }
   getMetrics(): ViewerMetrics { return { visiblePoints: this.map.visible ? this.loadedPoints : 0, loadedPoints: this.loadedPoints, loadedTiles: this.loadedTiles, drawCalls: this.renderer?.info.render.calls ?? 0, frameTimeMs: this.frameTime, pixelRatio: this.dpr, contextLost: this.contextLost }; }
   resetView(): void { if (!this.camera || !this.controls) return; this.camera.position.set(.45, .35, .55); this.controls.target.set(0, 0, 0); this.controls.update(); }
+  async loadMesh(projectId: string, mapId: string): Promise<void> {
+    const basePath = `/api/v1/projects/${projectId}/maps/${mapId}/openmvs/`;
+    
+    // Clean up existing mesh
+    disposeGroup(this.objMesh);
+    
+    try {
+      const mtlLoader = new MTLLoader();
+      mtlLoader.setPath(basePath);
+      const materials = await mtlLoader.loadAsync("model_dense_texture.mtl");
+      materials.preload();
+      
+      const objLoader = new OBJLoader();
+      objLoader.setMaterials(materials);
+      objLoader.setPath(basePath);
+      const object = await objLoader.loadAsync("model_dense_texture.obj");
+      
+      object.traverse((child) => {
+        if ((child as Mesh).isMesh) {
+          const m = (child as Mesh).material;
+          const fixMat = (mat: any) => {
+            mat.side = DoubleSide;
+            mat.opacity = 1.0;
+            mat.transparent = false;
+            mat.needsUpdate = true;
+          };
+          if (Array.isArray(m)) {
+            m.forEach(fixMat);
+          } else if (m) {
+            fixMat(m);
+          }
+        }
+      });
+      
+      this.objMesh.add(object);
+      this.map.updateMatrixWorld(true);
+      this.frameObject(this.objMesh);
+    } catch (err) {
+      console.error("Failed to load mesh:", err);
+    }
+  }
+
+  setMeshVisibility(visible: boolean): void {
+    this.objMesh.visible = visible;
+    if (visible) {
+      this.map.updateMatrixWorld(true);
+    }
+  }
+
   dispose(): void {
     if (this.disposed) return; this.disposed = true; this.controller?.abort(); cancelAnimationFrame(this.frame); this.controls?.dispose(); this.transformControls?.dispose();
     if (this.onKeyDown) window.removeEventListener("keydown", this.onKeyDown);
@@ -372,7 +424,23 @@ export class ViewerEngine implements Contract {
   private loop = () => { if (this.disposed || !this.renderer || !this.scene || !this.camera) return; const now = performance.now(); this.frameTime = this.frameTime * .9 + (now - this.lastFrame) * .1; this.lastFrame = now; this.controls?.update(); if (!this.contextLost) this.renderer.render(this.scene, this.camera); this.frame = requestAnimationFrame(this.loop); };
   private onLost = (event: Event) => { event.preventDefault(); this.contextLost = true; };
   private onRestored = () => { this.contextLost = false; this.renderer?.info.reset(); };
-  private visibility() { this.map.visible = this.filters.showMap !== false; this.camerasGroup.visible = this.filters.showFrames !== false; this.helpers.visible = this.filters.showFrames !== false; this.registration.visible = this.mode === "registration" && this.filters.showBoard !== false; this.tracking.visible = this.mode === "live" && this.filters.showProbe !== false; this.paint.visible = this.mode === "live" || this.mode === "review"; this.paintObjects.forEach((object) => { const data = object.userData; object.visible = (data.recordType !== "point" || this.filters.showPoints !== false) && (data.recordType !== "path" || this.filters.showPaths !== false) && (!data.deleted || this.filters.includeDeleted === true) && (!this.filters.quality || this.filters.quality === "all" || data.quality === this.filters.quality); }); }
+  private visibility() {
+    this.map.visible = this.filters.showMap !== false;
+    this.map.traverse((object) => {
+      if (object instanceof Points) {
+        object.visible = this.filters.showPoints !== false;
+      }
+    });
+    this.camerasGroup.visible = this.filters.showFrames !== false;
+    this.helpers.visible = this.filters.showFrames !== false;
+    this.registration.visible = this.mode === "registration" && this.filters.showBoard !== false;
+    this.tracking.visible = this.mode === "live" && this.filters.showProbe !== false;
+    this.paint.visible = this.mode === "live" || this.mode === "review";
+    this.paintObjects.forEach((object) => {
+      const data = object.userData;
+      object.visible = (data.recordType !== "point" || this.filters.showPoints !== false) && (data.recordType !== "path" || this.filters.showPaths !== false) && (!data.deleted || this.filters.includeDeleted === true) && (!this.filters.quality || this.filters.quality === "all" || data.quality === this.filters.quality);
+    });
+  }
   private upsertPaint(record: PaintedPoint | PaintedPath) { this.removePaint(record.id); let object: Mesh | Line; if (record.type === "point") { object = this.sphere(.0045, record.deleted ? 0x667487 : record.quality === "good" ? 0x61e2b1 : record.quality === "warning" ? 0xf2bd55 : 0xff7479, record.deleted ? .35 : .95); object.position.copy(worldToViewer(record.position_w_m)); } else object = new Line(new BufferGeometry().setFromPoints(record.positions_w_m.map(worldToViewer)), new LineBasicMaterial({ color: record.deleted ? 0x667487 : 0x58d6ff, transparent: true, opacity: record.deleted ? .3 : .9 })); object.userData = { recordType: record.type, quality: record.quality, deleted: record.deleted }; this.paint.add(object); this.paintObjects.set(record.id, object); }
   private removePaint(id: string) { const object = this.paintObjects.get(id); if (!object) return; object.removeFromParent(); object.geometry.dispose(); const material = object.material; if (Array.isArray(material)) material.forEach((item) => item.dispose()); else material.dispose(); this.paintObjects.delete(id); }
   private sphere(radius: number, color: number, opacity = 1): Mesh { return new Mesh(new SphereGeometry(radius, 12, 8), new MeshBasicMaterial({ color, transparent: opacity < 1, opacity })); }

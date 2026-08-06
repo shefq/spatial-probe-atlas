@@ -170,7 +170,7 @@ def job_dict(record: JobRecord) -> dict[str, Any]:
         "job_id": record.id, "id": record.id, "project_id": record.project_id, "owner_id": record.owner_id, "type": record.type,
         "state": record.state, "stage": record.stage, "stage_index": record.stage_index, "stage_count": record.stage_count,
         "progress": record.progress, "message": record.message, "warnings": record.warnings, "checkpoint": record.checkpoint,
-        "result": record.result, "error": record.error, "cancel_requested": record.cancel_requested, "attempt": record.attempt,
+        "spec": record.spec, "result": record.result, "error": record.error, "cancel_requested": record.cancel_requested, "attempt": record.attempt,
         "heartbeat_at": record.heartbeat_at, "created_at": record.created_at, "updated_at": record.updated_at,
         "started_at": record.started_at, "finished_at": record.finished_at,
     }

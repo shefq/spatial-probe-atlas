@@ -482,6 +482,16 @@ def build_cuda_point_cloud(
             except Exception:
                 pass
 
+        colmap_out = output / "colmap" / "0"
+        colmap_out.mkdir(parents=True, exist_ok=True)
+        reconstruction.write_binary(str(colmap_out))
+        images_out = output / "images"
+        images_out.mkdir(parents=True, exist_ok=True)
+        for img_name in image_names:
+            src = image_dir / img_name
+            if src.exists():
+                (images_out / img_name).hardlink_to(src)
+
         shutil.rmtree(image_dir, ignore_errors=True)
         result = _publish_map(
             store,

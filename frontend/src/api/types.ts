@@ -138,6 +138,7 @@ export interface SceneMap {
   reprojection_error_px?: number;
   units?: "arbitrary" | "m";
   size_bytes?: number;
+  effective_compute_profile?: string;
   manifest_url?: string;
   user_transform?: MapTransform;
   job_id?: UUID;
