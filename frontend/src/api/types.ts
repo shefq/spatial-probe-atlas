@@ -214,6 +214,7 @@ export interface BlobDetectorSettings {
   thresholdStep: number;
   minRepeatability: number;
   minDistBetweenBlobs: number;
+  maxReprojectionError?: number;
   filterByColor: boolean;
   blobColor: number;
   filterByArea: boolean;
@@ -236,6 +237,7 @@ export const DEFAULT_BLOB_SETTINGS: BlobDetectorSettings = {
   thresholdStep: 17,
   minRepeatability: 2,
   minDistBetweenBlobs: 10,
+  maxReprojectionError: 2.5,
   filterByColor: true,
   blobColor: 0,
   filterByArea: true,
@@ -322,6 +324,7 @@ export interface Registration {
   observation_count?: number;
   validation_state?: "pending" | "passed" | "accepted_with_warning" | "failed";
   t_w_b?: number[];
+  board_definition?: any;
   created_at?: IsoTimestamp;
 }
 

@@ -50,6 +50,8 @@ def validate_blob_detector(blob: dict[str, Any]) -> list[str]:
         errors.append("minRepeatability must be at least 1")
     if float(blob["minDistBetweenBlobs"]) < 0:
         errors.append("minDistBetweenBlobs must not be negative")
+    if "maxReprojectionError" in blob and float(blob["maxReprojectionError"]) <= 0:
+        errors.append("maxReprojectionError must be positive")
     if not 0 <= int(blob["blobColor"]) <= 255:
         errors.append("blobColor must be within 0..255")
     for enabled, low, high in (

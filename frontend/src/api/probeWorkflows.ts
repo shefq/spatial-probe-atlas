@@ -29,4 +29,8 @@ export const probeWorkflowApi = {
     json<ProbeCapture>(`/projects/${projectId}/probe-captures/${captureId}/frames:capture`, calibrationId ? { calibration_id: calibrationId } : undefined),
   createCalibration: (projectId: string, captureId: string, name: string, acceptWarning = false) =>
     json<ProbeCalibration>(`/projects/${projectId}/probe-calibrations`, { probe_capture_id: captureId, name, accept_warning: acceptWarning }),
+  arucoCapture: (projectId: string, captureId?: string, markerIds?: number[]) =>
+    json<{ probe_capture: ProbeCapture }>(`/projects/${projectId}/aruco-calibrations/capture`, { capture_id: captureId, marker_ids: markerIds }),
+  arucoSolve: (projectId: string, captureId: string, markerIds?: number[], anchorId?: number, activate = true) =>
+    json<{ probe_calibration: ProbeCalibration; registration: any }>(`/projects/${projectId}/aruco-calibrations/solve`, { probe_capture_id: captureId, marker_ids: markerIds, anchor_id: anchorId, activate }),
 };

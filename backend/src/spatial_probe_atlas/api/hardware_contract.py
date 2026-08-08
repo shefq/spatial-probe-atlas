@@ -23,20 +23,23 @@ router = APIRouter()
 def _best_probe_view(frame: dict[str, Any]) -> float | None:
     try:
         import cv2  # type: ignore
-        image = np.asarray([[item["x"], item["y"]] for item in frame["diagnostics"]["keypoints"]], dtype=np.float32)
-        if len(image) != 5:
+        keypoints = frame.get("diagnostics", {}).get("keypoints", [])
+        if len(keypoints) < 5:
             return None
+        image = np.asarray([[item["x"], item["y"]] for item in keypoints[:8]], dtype=np.float32)
         object_points = np.asarray(calibration.PROBE_POINTS, dtype=np.float32)
         k = np.asarray(frame["intrinsic_matrix"], dtype=float).reshape(3, 3)
         best = math.inf
-        for order in itertools.permutations(range(5)):
-            ordered = image[list(order)]
-            success, rvec, tvec = cv2.solvePnP(object_points, ordered, k, None, flags=cv2.SOLVEPNP_EPNP)
-            if not success or tvec[2, 0] <= 0:
-                continue
-            projected, _ = cv2.projectPoints(object_points, rvec, tvec, k, None)
-            error = float(np.sqrt(np.mean(np.sum((projected[:, 0] - ordered) ** 2, axis=1))))
-            best = min(best, error)
+        for candidate_indices in itertools.combinations(range(len(image)), 5):
+            candidate = image[list(candidate_indices)]
+            for order in itertools.permutations(range(5)):
+                ordered = candidate[list(order)]
+                success, rvec, tvec = cv2.solvePnP(object_points, ordered, k, None, flags=cv2.SOLVEPNP_EPNP)
+                if not success or tvec[2, 0] <= 0:
+                    continue
+                projected, _ = cv2.projectPoints(object_points, rvec, tvec, k, None)
+                error = float(np.sqrt(np.mean(np.sum((projected[:, 0] - ordered) ** 2, axis=1))))
+                best = min(best, error)
         return best if math.isfinite(best) else None
     except Exception:
         return None
@@ -60,11 +63,12 @@ def create_probe_calibration_hardware_safe(request: Request, project_id: str, bo
 
     rms = float(np.sqrt(np.mean(np.square(best_subset))))
     maximum = float(max(best_subset))
+    max_thresh = float(body.get("maxReprojectionError") or (capture.get("blob_detector") or {}).get("maxReprojectionError") or 2.5)
     accept_warning = bool(body.get("accept_warning") or body.get("allow_warning"))
-    if rms > 2.5 and not accept_warning:
+    if rms > max_thresh and not accept_warning:
         raise AppError(
             "PROBE_CALIBRATION_REPROJECTION_HIGH",
-            f"Real probe views reprojection error ({rms:.2f} px) exceeds the 2.5 px validation threshold.",
+            f"Real probe views reprojection error ({rms:.2f} px) exceeds the {max_thresh:.1f} px validation threshold.",
             status_code=422,
             details={"rms_reprojection_error_px": rms, "max_reprojection_error_px": maximum, "warning_acceptance_available": True},
             suggested_action="Capture views with the probe held steady, or accept the warning to proceed.",

@@ -21,11 +21,11 @@ from .replay import (
 )
 
 
-MAX_TRANSLATION_JUMP_M = 0.05
-MAX_ROTATION_JUMP_DEG = 30.0
+MAX_TRANSLATION_JUMP_M = 0.20
+MAX_ROTATION_JUMP_DEG = 60.0
 POSE_EMA_ALPHA = 0.35
 LOST_AFTER_REJECTED_FRAMES = 5
-RECOVER_AFTER_GOOD_FRAMES = 3
+RECOVER_AFTER_GOOD_FRAMES = 1
 
 
 @dataclass
@@ -41,7 +41,10 @@ class TrackingState:
             self.good_count = 0
             if self.rejected_count >= LOST_AFTER_REJECTED_FRAMES:
                 self.state = "lost"
+                self.accepted_pose = None
             return self.state, self.accepted_pose, "pose_rejected"
+        if self.state == "lost":
+            self.accepted_pose = None
         if self.accepted_pose is not None:
             delta = np.linalg.inv(self.accepted_pose) @ pose
             translation = float(np.linalg.norm(delta[:3, 3]))
@@ -51,6 +54,7 @@ class TrackingState:
                 self.good_count = 0
                 if self.rejected_count >= LOST_AFTER_REJECTED_FRAMES:
                     self.state = "lost"
+                    self.accepted_pose = None
                 return self.state, self.accepted_pose, "implausible_pose_jump"
             filtered = pose.copy()
             filtered[:3, 3] = (1 - POSE_EMA_ALPHA) * self.accepted_pose[:3, 3] + POSE_EMA_ALPHA * pose[:3, 3]
@@ -134,13 +138,13 @@ class CpuTrackingPipeline:
 
     def _probe_pose(self, frame: NormalizedCameraFrame) -> tuple[np.ndarray | None, int, float, str | None, int]:
         cv2 = self.cv2
-        result = detect_blobs(frame.rgb, frame.width, frame.height, self.calibration["blob_detector"])
+        marker_points = np.asarray(self.calibration["probe"]["marker_points_m"], dtype=np.float32)
+        result = detect_blobs(frame.rgb, frame.width, frame.height, self.calibration["blob_detector"], intrinsic_matrix=frame.intrinsic_matrix, marker_points_m=marker_points)
         points = result.get("keypoints", [])
         candidate_count = len(points)
         if candidate_count < 5:
             return None, 0, math.inf, "fewer_than_five_blobs", candidate_count
-        candidates = np.asarray([[item["x"], item["y"]] for item in points[:7]], dtype=np.float32)
-        marker_points = np.asarray(self.calibration["probe"]["marker_points_m"], dtype=np.float32)
+        candidates = np.asarray([[item["x"], item["y"]] for item in points[:8]], dtype=np.float32)
         k = np.asarray(frame.intrinsic_matrix, dtype=float).reshape(3, 3)
         best: tuple[np.ndarray | None, int, float, str | None, int] = (None, 0, math.inf, "probe_correspondence_failed", candidate_count)
         for selection in itertools.combinations(range(len(candidates)), 5):

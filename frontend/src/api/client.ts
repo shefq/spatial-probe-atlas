@@ -134,6 +134,7 @@ export const api = {
     manifest: (projectId: string, id: string, signal?: AbortSignal) => request<PointCloudManifest>(`/projects/${projectId}/maps/${id}/point-cloud/manifest`, { signal }),
   },
   probe: {
+    get: (projectId: string, id: string, signal?: AbortSignal) => request<ProbeCalibration>(`/projects/${projectId}/probe-calibrations/${id}`, { signal }),
     list: (projectId: string, signal?: AbortSignal) => request<ProbeCalibration[]>(`/projects/${projectId}/probe-calibrations`, { signal }),
     validate: (projectId: string, file: File) => upload<CalibrationValidation>(`/projects/${projectId}/probe-calibrations/validate`, file),
     import: (projectId: string, validationId: string, activate = true) => request<ProbeCalibration>(`/projects/${projectId}/probe-calibrations/import`, { method: "POST", body: JSON.stringify({ validation_id: validationId, activate }) }),
@@ -142,9 +143,11 @@ export const api = {
     download: (projectId: string, id: string) => downloadFromApi(`/projects/${projectId}/probe-calibrations/${id}/download`, "probe_calibration.json"),
   },
   registration: {
+    get: (projectId: string, id: string, signal?: AbortSignal) => request<Registration>(`/projects/${projectId}/registrations/${id}`, { signal }),
     list: (projectId: string, signal?: AbortSignal) => request<Registration[]>(`/projects/${projectId}/registrations`, { signal }),
     create: (projectId: string, mapId: string, calibrationId: string) => request<Registration>(`/projects/${projectId}/registrations`, { method: "POST", body: JSON.stringify({ map_id: mapId, probe_calibration_id: calibrationId, name: "Metric board registration" }) }),
-    addObservation: (projectId: string, id: string) => request<Registration>(`/projects/${projectId}/registrations/${id}/observations`, { method: "POST", body: JSON.stringify({ source: "current_frame" }) }),
+    addObservation: (projectId: string, id: string, body?: Record<string, unknown>) => request<Registration>(`/projects/${projectId}/registrations/${id}/observations`, { method: "POST", body: JSON.stringify(body ?? { source: "current_frame" }) }),
+    clearObservations: (projectId: string, id: string) => request<Registration>(`/projects/${projectId}/registrations/${id}/observations`, { method: "DELETE" }),
     solve: (projectId: string, id: string) => request<Registration>(`/projects/${projectId}/registrations/${id}/solve`, { method: "POST" }),
     validate: (projectId: string, id: string, acceptWarning = false) => request<Registration>(`/projects/${projectId}/registrations/${id}/validate`, { method: "POST", body: JSON.stringify({ accept_warning: acceptWarning, note: acceptWarning ? "Operator accepted the measured residual warning after inspection." : undefined }) }),
     activate: (projectId: string, id: string) => request<Registration>(`/projects/${projectId}/registrations/${id}/activate`, { method: "POST" }),

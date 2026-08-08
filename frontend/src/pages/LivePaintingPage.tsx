@@ -45,6 +45,30 @@ export function LivePaintingPage() {
   const [lowQualityOpen, setLowQualityOpen] = useState(false);
   const [overrideReason, setOverrideReason] = useState("");
   const [backgroundContinue, setBackgroundContinue] = useState(false);
+  const [probeGeometry, setProbeGeometry] = useState<number[][] | undefined>();
+  const [boardDefinition, setBoardDefinition] = useState<any>();
+
+  useEffect(() => {
+    if (!project?.active_probe_calibration_id) return;
+    const controller = new AbortController();
+    api.probe.get(projectId, project.active_probe_calibration_id, controller.signal).then(cal => {
+      setProbeGeometry(cal.probe?.marker_points_m);
+    }).catch(() => {});
+    return () => controller.abort();
+  }, [projectId, project?.active_probe_calibration_id]);
+
+  useEffect(() => {
+    if (!project?.active_registration_id) return;
+    const controller = new AbortController();
+    api.registration.get(projectId, project.active_registration_id, controller.signal).then(reg => {
+      setBoardDefinition((reg as any).board_definition);
+    }).catch(() => {});
+    return () => controller.abort();
+  }, [projectId, project?.active_registration_id]);
+
+  const registrationView = useMemo(() => ({
+    board_definition: boardDefinition
+  }), [boardDefinition]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -116,13 +140,16 @@ export function LivePaintingPage() {
     } else if (envelope.type === "session.status") setSession({ ...session!, ...(envelope.data as Partial<SessionSnapshot>) });
   }
 
-  const fallbackPreflight: PreflightCheck[] = useMemo(() => [
-    { key: "camera", label: "Record3D or replay ready", passed: cameraReady, required_route: `/projects/${projectId}/camera` },
-    { key: "map", label: "Active point-cloud map", passed: Boolean(project?.active_map_id), required_route: `/projects/${projectId}/mapping` },
-    { key: "calibration", label: "Active probe calibration", passed: Boolean(project?.active_probe_calibration_id), required_route: `/projects/${projectId}/registration` },
-    { key: "registration", label: "Validated metric registration", passed: Boolean(project?.active_registration_id), required_route: `/projects/${projectId}/registration` },
-    { key: "storage", label: "Storage admission check", passed: project?.readiness?.storage_ready !== false, required_route: "/settings" },
-  ], [cameraReady, project, projectId]);
+  const fallbackPreflight: PreflightCheck[] = useMemo(() => {
+    const isAruco = (localStorage.getItem("spa_workflow_mode") as "standard" | "aruco_joint") === "aruco_joint";
+    return [
+      { key: "camera", label: "Record3D or replay ready", passed: cameraReady, required_route: `/projects/${projectId}/camera` },
+      { key: "map", label: isAruco ? "ArUco Board Registration" : "Active point-cloud map", passed: isAruco || Boolean(project?.active_map_id), required_route: `/projects/${projectId}/mapping` },
+      { key: "calibration", label: "Active probe calibration", passed: Boolean(project?.active_probe_calibration_id), required_route: `/projects/${projectId}/registration` },
+      { key: "registration", label: "Validated metric registration", passed: Boolean(project?.active_registration_id), required_route: `/projects/${projectId}/registration` },
+      { key: "storage", label: "Storage admission check", passed: project?.readiness?.storage_ready !== false, required_route: "/settings" },
+    ];
+  }, [cameraReady, project, projectId]);
   const preflight = session?.preflight ?? fallbackPreflight;
   const preflightPassed = preflight.every((check) => check.passed);
 
@@ -179,7 +206,7 @@ export function LivePaintingPage() {
           {["draft", "preflight", "recoverable"].includes(state ?? "") ? <PreflightBanner session={session} checks={preflight} busy={busy} onStart={() => void changeLifecycle(state === "recoverable" ? "resume" : "start")} /> : null}
           <div className="live-layout">
             <div className="live-viewer-wrap">
-              {(session.map_id ?? activeMap?.id) ? <SpatialViewer ref={viewerRef} mode="live" projectId={projectId} mapId={(session.map_id ?? activeMap!.id)!} sessionId={session.id} /> : <EmptyState title="Session map unavailable">Return to mapping without changing this recoverable session.</EmptyState>}
+              {((session.map_id ?? activeMap?.id) || (localStorage.getItem("spa_workflow_mode") === "aruco_joint")) ? <SpatialViewer ref={viewerRef} mode="live" projectId={projectId} mapId={(session.map_id ?? activeMap?.id) || ""} sessionId={session.id} probeGeometry={probeGeometry} registration={registrationView} /> : <EmptyState title="Session map unavailable">Return to mapping without changing this recoverable session.</EmptyState>}
               <LiveImageOverlay active={Boolean(["running", "paused", "degraded"].includes(state ?? ""))} tracking={tracking} />
               <div className="live-quality-ribbon"><StatusBadge state={tracking?.camera_state ?? "lost"} label={`Camera ${tracking?.camera_state ?? "waiting"}`} /><StatusBadge state={tracking?.probe_state ?? "lost"} label={`Probe ${tracking?.probe_state ?? "waiting"}`} /><StatusBadge state={tracking?.quality ?? "inactive"} label={`Quality ${tracking?.quality ?? "—"}`} /><StatusBadge state={reconnectState} label={`Stream ${reconnectState}`} /></div>
             </div>

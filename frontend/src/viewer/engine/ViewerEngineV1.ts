@@ -1,5 +1,5 @@
 import {
-  AmbientLight, AxesHelper, Box3, BoxGeometry, BufferAttribute, BufferGeometry, Color, DirectionalLight, GridHelper, Group,
+  AmbientLight, AxesHelper, Box3, BoxGeometry, BufferAttribute, BufferGeometry, Color, DirectionalLight, DoubleSide, GridHelper, Group,
   Line, LineBasicMaterial, LineSegments, Matrix4, Mesh, MeshBasicMaterial, PerspectiveCamera, Points, PointsMaterial, Quaternion, Raycaster, Scene,
   SphereGeometry, SRGBColorSpace, Vector2, Vector3, WebGLRenderer,
 } from "three";
@@ -10,8 +10,9 @@ import { decodeV1Tile, normalizeManifest, selectV1Tiles } from "../point-cloud/v
 import type { CameraItem, MapTransformData, PaintDataDelta, PointCloudSource, RegistrationView, TransformMode, ViewerEngine as Contract, ViewerFilters, ViewerMetrics, ViewerMode, ViewerOptions, ViewerSelection } from "./types";
 
 export const T_V_W = new Matrix4().set(1, 0, 0, 0, 0, 0, -1, 0, 0, 1, 0, 0, 0, 0, 0, 1);
-export function worldToViewer(value: [number, number, number]): Vector3 { return new Vector3(...value).applyMatrix4(T_V_W); }
-
+export function worldToViewer(value: [number, number, number] | number[]): Vector3 {
+  return new Vector3(value[0], value[1], value[2]).applyMatrix4(T_V_W);
+}
 function disposeGroup(group: Group): void {
   group.traverse((object) => {
     const renderable = object as Mesh | Line | Points;
@@ -54,7 +55,18 @@ export class ViewerEngine implements Contract {
   private readonly paintObjects = new Map<string, Mesh | Line>();
   private initialMapTransform = new Matrix4();
   private filters: ViewerFilters = { showMap: true, showFrames: true, showProbe: true, showBoard: true, showPoints: true, showPaths: true, pointSize: .012, pointBudget: 3_000_000 };
+  private probeGeometry: number[][] | null = null;
+  private probeGroup: Group | null = null;
+  private isAruco: boolean = false;
   public onCameraSelect?: (camera: CameraItem) => void;
+
+  private getViewerTransform(): Matrix4 {
+    return this.isAruco ? T_V_W.clone().multiply(new Matrix4().makeRotationX(Math.PI)) : T_V_W.clone();
+  }
+  
+  private worldToViewer(value: [number, number, number] | number[]): Vector3 {
+    return new Vector3(value[0], value[1], value[2]).applyMatrix4(this.getViewerTransform());
+  }
   public onCameraDoubleClick?: ((camera: CameraItem) => void) | null;
 
   async initialize(container: HTMLElement, options: ViewerOptions): Promise<void> {
@@ -326,20 +338,168 @@ export class ViewerEngine implements Contract {
 
   setRegistration(value: RegistrationView): void {
     if (!this.initialized || this.disposed) return; disposeGroup(this.registration);
-    const board = new AxesHelper(.07);
-    if (value.t_w_b?.length === 16) board.applyMatrix4(T_V_W.clone().multiply(new Matrix4().fromArray(value.t_w_b).transpose()));
-    this.registration.add(board);
-    value.observations?.forEach((point) => { const marker = this.sphere(.004, 0x58d6ff); marker.position.copy(worldToViewer(point)); this.registration.add(marker); });
-    value.residualPoints?.forEach((item) => this.registration.add(new Line(new BufferGeometry().setFromPoints([worldToViewer(item.from), worldToViewer(item.to)]), new LineBasicMaterial({ color: item.errorMm > 3 ? 0xff7479 : item.errorMm > 1.5 ? 0xf2bd55 : 0x61e2b1 }))));
+    
+    this.isAruco = Boolean(value.board_definition?.layout || value.board_definition);
+    const tvw = this.getViewerTransform();
+    
+    if (value.board_definition?.layout) {
+      const layout = value.board_definition.layout as Record<string, number[][]>;
+      let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+      for (const corners of Object.values(layout)) {
+        for (const pt of corners) {
+          if (pt[0] < minX) minX = pt[0];
+          if (pt[1] < minY) minY = pt[1];
+          if (pt[0] > maxX) maxX = pt[0];
+          if (pt[1] > maxY) maxY = pt[1];
+        }
+      }
+      if (minX !== Infinity) {
+        const boardGroup = new Group();
+        const margin = 0.03;
+        const width = Math.max(0.04, maxX - minX + 2 * margin);
+        const height = Math.max(0.04, maxY - minY + 2 * margin);
+        const centerX = (minX + maxX) / 2;
+        const centerY = (minY + maxY) / 2;
+        
+        // 1. Base board plate (Bright White/Slate surface, visible from both sides)
+        const planeGeo = new BoxGeometry(width, height, 0.003);
+        const planeMat = new MeshBasicMaterial({ color: 0xe2e8f0, side: DoubleSide });
+        const plane = new Mesh(planeGeo, planeMat);
+        plane.position.set(centerX, centerY, -0.0015);
+        boardGroup.add(plane);
+
+        // 2. Outer board cyan border outline
+        const borderPts = [
+          new Vector3(centerX - width / 2, centerY - height / 2, 0.0002),
+          new Vector3(centerX + width / 2, centerY - height / 2, 0.0002),
+          new Vector3(centerX + width / 2, centerY + height / 2, 0.0002),
+          new Vector3(centerX - width / 2, centerY + height / 2, 0.0002),
+          new Vector3(centerX - width / 2, centerY - height / 2, 0.0002),
+        ];
+        const borderGeom = new BufferGeometry().setFromPoints(borderPts);
+        boardGroup.add(new Line(borderGeom, new LineBasicMaterial({ color: 0x00f0ff, linewidth: 3 })));
+
+        // 3. ArUco markers (filled dark square + thick vibrant outline + yellow orientation dot)
+        const palette = [0xff3b30, 0x34c759, 0x007aff, 0xaf52de, 0xff9500];
+        let markerIndex = 0;
+        for (const corners of Object.values(layout)) {
+          if (corners.length < 4) continue;
+          const color = palette[markerIndex % palette.length];
+          const P0 = new Vector3(corners[0][0], corners[0][1], 0.001);
+          const P1 = new Vector3(corners[1][0], corners[1][1], 0.001);
+          const P2 = new Vector3(corners[2][0], corners[2][1], 0.001);
+          const P3 = new Vector3(corners[3][0], corners[3][1], 0.001);
+          
+          // Marker filled dark square
+          const shapeGeom = new BufferGeometry();
+          const verts = new Float32Array([
+            P0.x, P0.y, P0.z,  P1.x, P1.y, P1.z,  P2.x, P2.y, P2.z,
+            P0.x, P0.y, P0.z,  P2.x, P2.y, P2.z,  P3.x, P3.y, P3.z,
+          ]);
+          shapeGeom.setAttribute("position", new BufferAttribute(verts, 3));
+          const markerMesh = new Mesh(shapeGeom, new MeshBasicMaterial({ color: 0x1e293b, side: DoubleSide }));
+          boardGroup.add(markerMesh);
+
+          // Marker colored outline
+          const lineGeom = new BufferGeometry().setFromPoints([P0, P1, P2, P3, P0]);
+          boardGroup.add(new Line(lineGeom, new LineBasicMaterial({ color, linewidth: 3 })));
+
+          // Corner 0 yellow orientation dot
+          const dot = this.sphere(0.004, 0xffd60a);
+          dot.position.copy(P0);
+          boardGroup.add(dot);
+
+          markerIndex++;
+        }
+        
+        if (value.t_w_b?.length === 16) boardGroup.applyMatrix4(tvw.clone().multiply(new Matrix4().fromArray(value.t_w_b).transpose()));
+        else boardGroup.applyMatrix4(tvw);
+        this.registration.add(boardGroup);
+      }
+    } else {
+      const board = new AxesHelper(.12);
+      if (value.t_w_b?.length === 16) board.applyMatrix4(tvw.clone().multiply(new Matrix4().fromArray(value.t_w_b).transpose()));
+      else board.applyMatrix4(tvw);
+      this.registration.add(board);
+    }
+    
+    value.observations?.forEach((point) => { const marker = this.sphere(.004, 0x58d6ff); marker.position.copy(this.worldToViewer(point)); this.registration.add(marker); });
+    value.residualPoints?.forEach((item) => this.registration.add(new Line(new BufferGeometry().setFromPoints([this.worldToViewer(item.from), this.worldToViewer(item.to)]), new LineBasicMaterial({ color: item.errorMm > 3 ? 0xff7479 : item.errorMm > 1.5 ? 0xf2bd55 : 0x61e2b1 }))));
     this.visibility();
+  }
+
+  setProbeGeometry(geometry: number[][]): void {
+    this.probeGeometry = geometry;
+    if (this.probeGroup) disposeGroup(this.probeGroup);
+    this.probeGroup = new Group();
+    
+    const pts = geometry.map(p => new Vector3(p[0], p[1], p[2]));
+    const group = this.probeGroup;
+    const geom = new BufferGeometry().setFromPoints(pts);
+    group.add(new Line(geom, new LineBasicMaterial({ color: 0xffea00, linewidth: 2 })));
+    
+    pts.forEach(p => {
+      const s = this.sphere(.004, 0x61e2b1);
+      s.position.copy(p);
+      group.add(s);
+    });
   }
 
   applyTrackingFrame(value: TrackingViewFrame): void {
     if (!this.initialized || this.disposed) return;
-    let tip = this.tracking.getObjectByName("tip") as Mesh | undefined;
-    if (!tip) { tip = this.sphere(.006, 0x61e2b1); tip.name = "tip"; this.tracking.add(tip); }
-    tip.visible = value.probe_state === "tracked" && Boolean(value.tip_w_m);
-    if (value.tip_w_m) { tip.position.copy(worldToViewer(value.tip_w_m)); (tip.material as MeshBasicMaterial).color.set(value.quality === "good" ? 0x61e2b1 : value.quality === "warning" ? 0xf2bd55 : 0xff7479); }
+    const t_w_c = (value as any).t_w_c as number[] | undefined;
+    const t_c_m = (value as any).t_c_m as number[] | undefined;
+    
+    if (this.probeGroup && value.probe_state === "tracked" && t_w_c && t_c_m) {
+      if (this.probeGroup.parent !== this.tracking) this.tracking.add(this.probeGroup);
+      this.probeGroup.visible = true;
+      
+      const matC = new Matrix4().fromArray(t_w_c).transpose();
+      const matM = new Matrix4().fromArray(t_c_m).transpose();
+      const matW = matC.multiply(matM);
+      const viewerMat = this.getViewerTransform().multiply(matW);
+      viewerMat.decompose(this.probeGroup.position, this.probeGroup.quaternion, this.probeGroup.scale);
+      
+      const tip = this.tracking.getObjectByName("tip") as Mesh | undefined;
+      if (tip) tip.visible = false;
+    } else {
+      if (this.probeGroup) this.probeGroup.visible = false;
+      let tip = this.tracking.getObjectByName("tip") as Mesh | undefined;
+      if (!tip) { tip = this.sphere(.006, 0x61e2b1); tip.name = "tip"; this.tracking.add(tip); }
+      tip.visible = value.probe_state === "tracked" && Boolean(value.tip_w_m);
+      if (value.tip_w_m) { tip.position.copy(this.worldToViewer(value.tip_w_m)); (tip.material as MeshBasicMaterial).color.set(value.quality === "good" ? 0x61e2b1 : value.quality === "warning" ? 0xf2bd55 : 0xff7479); }
+    }
+
+    let camMesh = this.camerasGroup.getObjectByName("live_cam") as LineSegments | undefined;
+    if (!camMesh) {
+      const w = 0.08, h = 0.06, d = 0.12;
+      const vertices = new Float32Array([
+        0, 0, 0, w, h, d, 0, 0, 0, -w, h, d,
+        0, 0, 0, -w, -h, d, 0, 0, 0, w, -h, d,
+        w, h, d, -w, h, d, -w, h, d, -w, -h, d,
+        -w, -h, d, w, -h, d, w, -h, d, w, h, d,
+        0, -h, d, 0, -h - 0.03, d
+      ]);
+      const geom = new BufferGeometry();
+      geom.setAttribute("position", new BufferAttribute(vertices, 3));
+      camMesh = new LineSegments(geom, new LineBasicMaterial({ color: 0x00ffcc, linewidth: 3 }));
+      camMesh.name = "live_cam";
+      if (this.camerasGroup.parent !== this.map) {
+        this.map.add(this.camerasGroup);
+      }
+      this.camerasGroup.add(camMesh);
+    }
+    
+    const isTracked = value.camera_state === "tracked" || Boolean(t_w_c);
+    if (t_w_c && t_w_c.length === 16 && isTracked) {
+      camMesh.visible = true;
+      const mat = new Matrix4().fromArray(t_w_c).transpose();
+      const viewerMat = this.getViewerTransform().multiply(mat);
+      viewerMat.decompose(camMesh.position, camMesh.quaternion, camMesh.scale);
+      camMesh.scale.multiplyScalar(this.camScale);
+    } else {
+      camMesh.visible = false;
+    }
   }
 
   setPaintData(delta: PaintDataDelta): void {
@@ -347,7 +507,7 @@ export class ViewerEngine implements Contract {
     if (delta.reset) { disposeGroup(this.paint); this.paintObjects.clear(); }
     delta.removeIds?.forEach((id) => this.removePaint(id));
     delta.upsert?.forEach((record) => this.upsertPaint(record));
-    delta.provisional?.forEach((record) => { this.removePaint(record.id); const marker = this.sphere(.0045, 0x58d6ff, .6); marker.position.copy(worldToViewer(record.position)); marker.userData = { recordType: "point", quality: record.quality }; this.paint.add(marker); this.paintObjects.set(record.id, marker); });
+    delta.provisional?.forEach((record) => { this.removePaint(record.id); const marker = this.sphere(.0045, 0x58d6ff, .6); marker.position.copy(this.worldToViewer(record.position)); marker.userData = { recordType: "point", quality: record.quality }; this.paint.add(marker); this.paintObjects.set(record.id, marker); });
     this.visibility();
   }
 
@@ -357,7 +517,7 @@ export class ViewerEngine implements Contract {
   }
   setSelection(value: ViewerSelection): void {
     this.paintObjects.forEach((object, id) => object.scale.setScalar(id === value.id ? 1.8 : 1));
-    if (value.position && this.controls) { this.controls.target.copy(worldToViewer(value.position)); this.controls.update(); }
+    if (value.position && this.controls) { this.controls.target.copy(this.worldToViewer(value.position)); this.controls.update(); }
   }
   resize(width: number, height: number, dpr: number): void { if (!this.camera || !this.renderer || width < 1 || height < 1) return; this.camera.aspect = width / height; this.camera.updateProjectionMatrix(); this.dpr = Math.min(Math.max(.75, dpr), 2); this.renderer.setPixelRatio(this.dpr); this.renderer.setSize(width, height, false); }
   getMetrics(): ViewerMetrics { return { visiblePoints: this.map.visible ? this.loadedPoints : 0, loadedPoints: this.loadedPoints, loadedTiles: this.loadedTiles, drawCalls: this.renderer?.info.render.calls ?? 0, frameTimeMs: this.frameTime, pixelRatio: this.dpr, contextLost: this.contextLost }; }
@@ -372,8 +532,8 @@ export class ViewerEngine implements Contract {
   private loop = () => { if (this.disposed || !this.renderer || !this.scene || !this.camera) return; const now = performance.now(); this.frameTime = this.frameTime * .9 + (now - this.lastFrame) * .1; this.lastFrame = now; this.controls?.update(); if (!this.contextLost) this.renderer.render(this.scene, this.camera); this.frame = requestAnimationFrame(this.loop); };
   private onLost = (event: Event) => { event.preventDefault(); this.contextLost = true; };
   private onRestored = () => { this.contextLost = false; this.renderer?.info.reset(); };
-  private visibility() { this.map.visible = this.filters.showMap !== false; this.camerasGroup.visible = this.filters.showFrames !== false; this.helpers.visible = this.filters.showFrames !== false; this.registration.visible = this.mode === "registration" && this.filters.showBoard !== false; this.tracking.visible = this.mode === "live" && this.filters.showProbe !== false; this.paint.visible = this.mode === "live" || this.mode === "review"; this.paintObjects.forEach((object) => { const data = object.userData; object.visible = (data.recordType !== "point" || this.filters.showPoints !== false) && (data.recordType !== "path" || this.filters.showPaths !== false) && (!data.deleted || this.filters.includeDeleted === true) && (!this.filters.quality || this.filters.quality === "all" || data.quality === this.filters.quality); }); }
-  private upsertPaint(record: PaintedPoint | PaintedPath) { this.removePaint(record.id); let object: Mesh | Line; if (record.type === "point") { object = this.sphere(.0045, record.deleted ? 0x667487 : record.quality === "good" ? 0x61e2b1 : record.quality === "warning" ? 0xf2bd55 : 0xff7479, record.deleted ? .35 : .95); object.position.copy(worldToViewer(record.position_w_m)); } else object = new Line(new BufferGeometry().setFromPoints(record.positions_w_m.map(worldToViewer)), new LineBasicMaterial({ color: record.deleted ? 0x667487 : 0x58d6ff, transparent: true, opacity: record.deleted ? .3 : .9 })); object.userData = { recordType: record.type, quality: record.quality, deleted: record.deleted }; this.paint.add(object); this.paintObjects.set(record.id, object); }
+  private visibility() { this.map.visible = this.filters.showMap !== false; this.camerasGroup.visible = this.filters.showFrames !== false; this.helpers.visible = this.filters.showFrames !== false; this.registration.visible = this.filters.showBoard !== false; this.tracking.visible = (this.mode === "live" || this.mode === "registration") && this.filters.showProbe !== false; this.paint.visible = this.mode === "live" || this.mode === "review"; this.paintObjects.forEach((object) => { const data = object.userData; object.visible = (data.recordType !== "point" || this.filters.showPoints !== false) && (data.recordType !== "path" || this.filters.showPaths !== false) && (!data.deleted || this.filters.includeDeleted === true) && (!this.filters.quality || this.filters.quality === "all" || data.quality === this.filters.quality); }); }
+  private upsertPaint(record: PaintedPoint | PaintedPath) { this.removePaint(record.id); let object: Mesh | Line; if (record.type === "point") { object = this.sphere(.0045, record.deleted ? 0x667487 : record.quality === "good" ? 0x61e2b1 : record.quality === "warning" ? 0xf2bd55 : 0xff7479, record.deleted ? .35 : .95); object.position.copy(this.worldToViewer(record.position_w_m)); } else object = new Line(new BufferGeometry().setFromPoints(record.positions_w_m.map(p => this.worldToViewer(p))), new LineBasicMaterial({ color: record.deleted ? 0x667487 : 0x58d6ff, transparent: true, opacity: record.deleted ? .3 : .9 })); object.userData = { recordType: record.type, quality: record.quality, deleted: record.deleted }; this.paint.add(object); this.paintObjects.set(record.id, object); }
   private removePaint(id: string) { const object = this.paintObjects.get(id); if (!object) return; object.removeFromParent(); object.geometry.dispose(); const material = object.material; if (Array.isArray(material)) material.forEach((item) => item.dispose()); else material.dispose(); this.paintObjects.delete(id); }
   private sphere(radius: number, color: number, opacity = 1): Mesh { return new Mesh(new SphereGeometry(radius, 12, 8), new MeshBasicMaterial({ color, transparent: opacity < 1, opacity })); }
   private recenterTransformPivot(point: Vector3): void {

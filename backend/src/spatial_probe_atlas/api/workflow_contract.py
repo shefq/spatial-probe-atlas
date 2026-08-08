@@ -88,7 +88,7 @@ def _registration_view(container: Any, project_id: str, registration_id: str) ->
 def registration_observation_from_exact_map(request: Request, project_id: str, registration_id: str, body: dict[str, Any]) -> dict[str, Any]:
     container = request.app.state.container
     adapter = getattr(container.camera.adapter, "adapter_name", None)
-    if "source_point_m0" in body and "target_point_w" in body or adapter in {None, "replay"}:
+    if ("camera_pose_w" in body and "probe_pose_c" in body) or ("source_point_m0" in body and "target_point_w" in body) or adapter in {None, "replay"}:
         calibration.add_registration_observation(request, project_id, registration_id, body)
         return _registration_view(container, project_id, registration_id)
     frame = container.camera.latest_frame
@@ -97,7 +97,8 @@ def registration_observation_from_exact_map(request: Request, project_id: str, r
     registration = container.catalog.get_resource(project_id, "registration", registration_id)
     probe = container.catalog.get_resource(project_id, "probe_calibration", registration["probe_calibration_id"])
     scene_map = container.catalog.get_resource(project_id, "scene_map", registration["map_id"])
-    localizer = IndexedCpuTrackingPipeline(scene_map.get("localization_index") or {}, {"scale": 1.0, "rotation": np.eye(3).reshape(-1).tolist(), "translation": [0, 0, 0]}, probe, container.artifacts.root)
+    from spatial_probe_atlas.pipelines.tracking.factory import create_tracking_pipeline
+    localizer = create_tracking_pipeline(scene_map, {"scale": 1.0, "rotation": np.eye(3).reshape(-1).tolist(), "translation": [0, 0, 0]}, probe, container.artifacts.root)
     t_m0_c, inliers, error, reason = localizer._localize(frame)
     if t_m0_c is None or inliers < 30 or error > 3.0:
         raise AppError("MAP_LOCALIZATION_REJECTED", "The current frame could not be localized to the exact published reference map.", status_code=422, retryable=True, details={"inliers": inliers, "reprojection_error_px": error if math.isfinite(error) else None, "reason": reason})

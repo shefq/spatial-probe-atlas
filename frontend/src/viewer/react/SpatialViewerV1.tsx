@@ -14,6 +14,7 @@ export interface SpatialViewerProps {
   selection?: ViewerSelection;
   filters?: ViewerFilters;
   registration?: RegistrationView;
+  probeGeometry?: number[][];
   paintData?: PaintDataDelta;
   onSelectionChange?: (value: ViewerSelection) => void;
   onMetrics?: (value: ViewerMetrics) => void;
@@ -33,7 +34,7 @@ export interface SpatialViewerHandle {
 }
 
 export const SpatialViewer = forwardRef<SpatialViewerHandle, SpatialViewerProps>(function SpatialViewerV1(
-  { mode, projectId, mapId, selection, filters, registration, paintData, onMetrics, className = "" }, ref,
+  { mode, projectId, mapId, selection, filters, registration, probeGeometry, paintData, onMetrics, className = "" }, ref,
 ) {
   const containerRef = useRef<HTMLDivElement>(null);
   const engineRef = useRef<ViewerEngine | null>(null);
@@ -117,11 +118,12 @@ export const SpatialViewer = forwardRef<SpatialViewerHandle, SpatialViewerProps>
     return () => { active = false; };
   }, [engineReady, projectId, mapId, generation]);
 
-  useEffect(() => { engineRef.current?.setMode(mode); }, [mode]);
-  useEffect(() => { if (filters) engineRef.current?.setFilters(filters); }, [filters]);
-  useEffect(() => { if (selection) engineRef.current?.setSelection(selection); }, [selection]);
-  useEffect(() => { if (registration) engineRef.current?.setRegistration(registration); }, [registration]);
-  useEffect(() => { if (paintData) engineRef.current?.setPaintData(paintData); }, [paintData]);
+  useEffect(() => { if (engineReady && mode) engineRef.current?.setMode(mode); }, [engineReady, mode]);
+  useEffect(() => { if (engineReady && filters) engineRef.current?.setFilters(filters); }, [engineReady, filters]);
+  useEffect(() => { if (engineReady && selection) engineRef.current?.setSelection(selection); }, [engineReady, selection]);
+  useEffect(() => { if (engineReady && registration) engineRef.current?.setRegistration(registration); }, [engineReady, registration]);
+  useEffect(() => { if (engineReady && probeGeometry) engineRef.current?.setProbeGeometry(probeGeometry); }, [engineReady, probeGeometry]);
+  useEffect(() => { if (engineReady && paintData) engineRef.current?.setPaintData(paintData); }, [engineReady, paintData]);
 
   // Close popup on Escape key
   useEffect(() => {

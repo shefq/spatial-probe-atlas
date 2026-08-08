@@ -326,6 +326,7 @@ def _publish_map(
         "sfm": {
             "relative_uri": f"projects/{project_id}/maps/{map_id}/sfm",
             "database_sha256": _sha256(final / "sfm" / "database.db"),
+            "features_sha256": _sha256(final / "sfm" / "aliked_features.npz") if (final / "sfm" / "aliked_features.npz").exists() else None,
         },
         "bounds": manifest["bounds"],
     }
@@ -420,6 +421,15 @@ def build_cuda_point_cloud(
 
         database_path = sfm_dir / "database.db"
         _write_colmap_inputs(pycolmap, database_path, image_dir, image_names, frames, feature_rows, pair_matches)
+        
+        aliked_data = {}
+        for idx, name in enumerate(image_names):
+            row = feature_rows[idx]
+            aliked_data[f"{name}_keypoints"] = row["keypoints"].detach().cpu().numpy()
+            aliked_data[f"{name}_descriptors"] = row["descriptors"].detach().cpu().numpy()
+            aliked_data[f"{name}_image_size"] = row["image_size"].detach().cpu().numpy()
+        np.savez_compressed(sfm_dir / "aliked_features.npz", **aliked_data)
+
         pairs_path = sfm_dir / "pairs.txt"
         pairs_path.write_text(
             "".join(f"{image_names[left]} {image_names[right]}\n" for left, right in pair_matches),
@@ -446,6 +456,10 @@ def build_cuda_point_cloud(
         if not reconstructions:
             raise AppError("SFM_RECONSTRUCTION_FAILED", "pycolmap could not reconstruct a connected component.", status_code=422)
         reconstruction = max(reconstructions.values(), key=lambda value: int(value.num_reg_images()))
+        try:
+            reconstruction.write(sfm_dir)
+        except Exception:
+            pass
         registered = int(reconstruction.num_reg_images())
         point_rows = list(reconstruction.points3D.values())
         points = np.asarray([np.asarray(point.xyz, dtype=np.float64) for point in point_rows], dtype="<f4")
