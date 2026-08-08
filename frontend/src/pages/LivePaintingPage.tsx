@@ -14,6 +14,13 @@ export function LivePaintingPage() {
   const project = useProjectStore((state) => state.activeProject);
   const activeMap = useProjectStore((state) => state.activeMap);
   const cameraReady = useCameraStore((state) => state.status.state === "ready");
+  const cameraStatus = useCameraStore((state) => state.status);
+  const cameraIntrinsics = useMemo(() => {
+    if (cameraStatus.intrinsic_matrix && cameraStatus.rgb_width && cameraStatus.rgb_height) {
+      return { matrix: cameraStatus.intrinsic_matrix, width: cameraStatus.rgb_width, height: cameraStatus.rgb_height };
+    }
+    return undefined;
+  }, [cameraStatus]);
   const session = useLiveSessionStore((state) => state.session);
   const setSession = useLiveSessionStore((state) => state.setSession);
   const tracking = useLiveSessionStore((state) => state.trackingSummary);
@@ -47,6 +54,7 @@ export function LivePaintingPage() {
   const [backgroundContinue, setBackgroundContinue] = useState(false);
   const [probeGeometry, setProbeGeometry] = useState<number[][] | undefined>();
   const [boardDefinition, setBoardDefinition] = useState<any>();
+  const [isArucoMode, setIsArucoMode] = useState<boolean>(false);
 
   useEffect(() => {
     if (!project?.active_probe_calibration_id) return;
@@ -62,13 +70,15 @@ export function LivePaintingPage() {
     const controller = new AbortController();
     api.registration.get(projectId, project.active_registration_id, controller.signal).then(reg => {
       setBoardDefinition((reg as any).board_definition);
+      setIsArucoMode((reg as any).is_aruco_mode);
     }).catch(() => {});
     return () => controller.abort();
   }, [projectId, project?.active_registration_id]);
 
   const registrationView = useMemo(() => ({
-    board_definition: boardDefinition
-  }), [boardDefinition]);
+    board_definition: boardDefinition,
+    is_aruco_mode: isArucoMode
+  }), [boardDefinition, isArucoMode]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -206,7 +216,7 @@ export function LivePaintingPage() {
           {["draft", "preflight", "recoverable"].includes(state ?? "") ? <PreflightBanner session={session} checks={preflight} busy={busy} onStart={() => void changeLifecycle(state === "recoverable" ? "resume" : "start")} /> : null}
           <div className="live-layout">
             <div className="live-viewer-wrap">
-              {((session.map_id ?? activeMap?.id) || (localStorage.getItem("spa_workflow_mode") === "aruco_joint")) ? <SpatialViewer ref={viewerRef} mode="live" projectId={projectId} mapId={(session.map_id ?? activeMap?.id) || ""} sessionId={session.id} probeGeometry={probeGeometry} registration={registrationView} /> : <EmptyState title="Session map unavailable">Return to mapping without changing this recoverable session.</EmptyState>}
+              {((session.map_id ?? activeMap?.id) || (localStorage.getItem("spa_workflow_mode") === "aruco_joint")) ? <SpatialViewer ref={viewerRef} mode="live" projectId={projectId} mapId={(session.map_id ?? activeMap?.id) || ""} sessionId={session.id} probeGeometry={probeGeometry} registration={registrationView} cameraIntrinsics={cameraIntrinsics} /> : <EmptyState title="Session map unavailable">Return to mapping without changing this recoverable session.</EmptyState>}
               <LiveImageOverlay active={Boolean(["running", "paused", "degraded"].includes(state ?? ""))} tracking={tracking} />
               <div className="live-quality-ribbon"><StatusBadge state={tracking?.camera_state ?? "lost"} label={`Camera ${tracking?.camera_state ?? "waiting"}`} /><StatusBadge state={tracking?.probe_state ?? "lost"} label={`Probe ${tracking?.probe_state ?? "waiting"}`} /><StatusBadge state={tracking?.quality ?? "inactive"} label={`Quality ${tracking?.quality ?? "—"}`} /><StatusBadge state={reconnectState} label={`Stream ${reconnectState}`} /></div>
             </div>

@@ -83,6 +83,7 @@ class CpuTrackingPipeline:
         self.calibration = calibration
         self.camera_state = TrackingState()
         self.probe_state = TrackingState()
+        self.camera_min_inliers = CAMERA_MIN_INLIERS
         scale = float((similarity or {}).get("scale", 1.0))
         rotation = np.asarray((similarity or {}).get("rotation", np.eye(3).reshape(-1)), dtype=float).reshape(3, 3)
         translation = np.asarray((similarity or {}).get("translation", [0, 0, 0]), dtype=float)
@@ -144,7 +145,7 @@ class CpuTrackingPipeline:
         candidate_count = len(points)
         if candidate_count < 5:
             return None, 0, math.inf, "fewer_than_five_blobs", candidate_count
-        candidates = np.asarray([[item["x"], item["y"]] for item in points[:8]], dtype=np.float32)
+        candidates = np.asarray([[item["x"], item["y"]] for item in points[:6]], dtype=np.float32)
         k = np.asarray(frame.intrinsic_matrix, dtype=float).reshape(3, 3)
         best: tuple[np.ndarray | None, int, float, str | None, int] = (None, 0, math.inf, "probe_correspondence_failed", candidate_count)
         for selection in itertools.combinations(range(len(candidates)), 5):
@@ -168,7 +169,7 @@ class CpuTrackingPipeline:
         started = time.monotonic_ns()
         raw_w_c, camera_inliers, camera_error, camera_reason = self._localize(frame)
         raw_c_m, probe_inliers, probe_error, probe_reason, blob_count = self._probe_pose(frame)
-        camera_acceptable = raw_w_c is not None and camera_inliers >= CAMERA_MIN_INLIERS and camera_error <= CAMERA_MAX_REPROJECTION_ERROR_PX
+        camera_acceptable = raw_w_c is not None and camera_inliers >= self.camera_min_inliers and camera_error <= CAMERA_MAX_REPROJECTION_ERROR_PX
         probe_acceptable = raw_c_m is not None and probe_inliers >= PROBE_MIN_INLIERS and probe_error <= PROBE_MAX_REPROJECTION_ERROR_PX
         camera_state, t_w_c, camera_temporal = self.camera_state.update(raw_w_c if camera_acceptable else None)
         probe_state, t_c_m, probe_temporal = self.probe_state.update(raw_c_m if probe_acceptable else None)

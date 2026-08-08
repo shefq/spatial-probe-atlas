@@ -113,7 +113,7 @@ export function ProbeRegistrationPage() {
       setKinematicPose(null);
       return;
     }
-    if (observationMode === "kinematic" && !activeMap) {
+    if (observationMode === "kinematic" && !activeMap && workflowMode !== "aruco_joint") {
       setKinematicPose(null);
       return;
     }
@@ -135,7 +135,7 @@ export function ProbeRegistrationPage() {
     });
     stream.connect();
     return () => stream.close();
-  }, [cameraReady, projectId, selectedRegistrationId, observationMode, activeMap, selectedCalibrationId]);
+  }, [cameraReady, projectId, selectedRegistrationId, observationMode, activeMap, selectedCalibrationId, workflowMode]);
 
   useEffect(() => {
     if (workflowMode === "aruco_joint" && selectedCalibrationId) {
@@ -158,10 +158,10 @@ export function ProbeRegistrationPage() {
     validIds.forEach((id, index) => {
       const cx = (index - (validIds.length - 1) / 2) * spacing;
       layout[String(id)] = [
-        [cx - markerSize / 2, -markerSize / 2, 0],
-        [cx + markerSize / 2, -markerSize / 2, 0],
-        [cx + markerSize / 2, markerSize / 2, 0],
-        [cx - markerSize / 2, markerSize / 2, 0],
+        [cx - markerSize / 2, markerSize / 2, 0], // Top-Left
+        [cx + markerSize / 2, markerSize / 2, 0], // Top-Right
+        [cx + markerSize / 2, -markerSize / 2, 0], // Bottom-Right
+        [cx - markerSize / 2, -markerSize / 2, 0], // Bottom-Left
       ];
     });
     return {

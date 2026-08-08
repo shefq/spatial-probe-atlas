@@ -12,8 +12,9 @@ from typing import Any
 
 import numpy as np
 import yaml
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Request, HTTPException
 from fastapi.responses import FileResponse
+from starlette.concurrency import run_in_threadpool
 
 from spatial_probe_atlas.api.schemas import CalibrationRevisionRequest, RegistrationCreate, RegistrationValidationRequest, ValidationImportRequest
 from spatial_probe_atlas.domain.errors import AppError
@@ -163,7 +164,7 @@ async def capture_probe_frames(request: Request, project_id: str, capture_id: st
     for _ in range(count):
         frame = await container.camera.wait_for_frame(previous, timeout=2.0)
         previous = frame.sequence
-        diagnostics = detect_blobs(frame.rgb, frame.width, frame.height, blob_detector, intrinsic_matrix=frame.intrinsic_matrix, marker_points_m=marker_points_m)
+        diagnostics = await run_in_threadpool(detect_blobs, frame.rgb, frame.width, frame.height, blob_detector, intrinsic_matrix=frame.intrinsic_matrix, marker_points_m=marker_points_m)
         # The replay marker fixture supplies deterministic five-point correspondences to the
         # calibration solver independently from its textured mapping preview.
         if getattr(container.camera.adapter, "adapter_name", "") == "replay":
@@ -212,8 +213,8 @@ async def capture_joint_frames(request: Request, project_id: str, body: dict[str
     for _ in range(count):
         frame = await container.camera.wait_for_frame(previous, timeout=2.0)
         previous = frame.sequence
-        diagnostics = detect_blobs(frame.rgb, frame.width, frame.height, blob_detector, intrinsic_matrix=frame.intrinsic_matrix)
-        aruco_detections, _ = detect_aruco(frame.rgb, frame.width, frame.height, "DICT_4X4_50", marker_ids)
+        diagnostics = await run_in_threadpool(detect_blobs, frame.rgb, frame.width, frame.height, blob_detector, intrinsic_matrix=frame.intrinsic_matrix)
+        aruco_detections, _ = await run_in_threadpool(detect_aruco, frame.rgb, frame.width, frame.height, "DICT_4X4_50", marker_ids)
         
         tracked = diagnostics["tracked"] and len(aruco_detections) >= 1
         diagnostics["aruco_detections"] = aruco_detections
@@ -299,15 +300,20 @@ def solve_joint_calibration(request: Request, project_id: str, body: dict[str, A
     # Create probe calibration
     portable_probe = _portable_calibration("ArUco Joint Probe", len(frames), len(accepted), container.catalog.get_project(project_id)["name"])
     portable_probe["probe"]["t_marker_tip"] = [1, 0, 0, tip_probe[0], 0, 1, 0, tip_probe[1], 0, 0, 1, tip_probe[2], 0, 0, 0, 1]
-    probe_id = portable_probe["calibration_id"]
-    artifact = container.artifacts.atomic_write_json(container.artifacts.project_path(project_id, Path("calibrations/probe") / f"{probe_id}.json"), portable_probe)
-    probe_res = container.catalog.create_resource(project_id, "probe_calibration", state="valid", name=portable_probe["name"], parent_id=capture_id, resource_id=probe_id, payload={**portable_probe, "artifact": artifact, "checksum": _checksum(portable_probe), "source_frame_ids": [item["id"] for item in accepted]})
     
-    # Create ArUco registration
+    # Create ArUco registration definition
     board_def = {
         "dictionary": "DICT_4X4_50", "marker_ids": marker_ids, "anchor_id": anchor_id,
         "marker_size_m": true_marker_size, "layout": optimized_layout
     }
+    
+    # Include board calibration data in the same probe calibration data as requested
+    portable_probe["board"] = board_def
+    
+    probe_id = portable_probe["calibration_id"]
+    artifact = container.artifacts.atomic_write_json(container.artifacts.project_path(project_id, Path("calibrations/probe") / f"{probe_id}.json"), portable_probe)
+    probe_res = container.catalog.create_resource(project_id, "probe_calibration", state="valid", name=portable_probe["name"], parent_id=capture_id, resource_id=probe_id, payload={**portable_probe, "artifact": artifact, "checksum": _checksum(portable_probe), "source_frame_ids": [item["id"] for item in accepted]})
+    
     # No map is actually needed for pure ArUco live painting, but we create a "Registration" so tracking has context
     reg = container.catalog.create_resource(project_id, "registration", state="active", name="ArUco Joint Registration", payload={"map_id": None, "probe_calibration_id": probe_id, "board_definition": board_def, "observation_count": len(joint_frames), "validation_status": "passed", "rms_residual_m": 0.0, "max_residual_m": 0.0, "is_aruco_mode": True})
 

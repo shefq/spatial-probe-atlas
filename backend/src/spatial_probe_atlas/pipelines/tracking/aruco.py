@@ -34,6 +34,7 @@ class ArucoTrackingPipeline(CpuTrackingPipeline):
         layout = board_def.get("layout", {})
         self.marker_layout = {int(k): np.asarray(v, dtype=np.float64) for k, v in layout.items()}
         self.references = []
+        self.camera_min_inliers = 4
 
     def _localize(self, frame: NormalizedCameraFrame) -> tuple[np.ndarray | None, int, float | None, str | None]:
         from spatial_probe_atlas.pipelines.aruco import detect_aruco, estimate_board_pose, matrix_from_pose

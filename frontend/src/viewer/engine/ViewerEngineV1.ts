@@ -1,7 +1,7 @@
 import {
-  AmbientLight, AxesHelper, Box3, BoxGeometry, BufferAttribute, BufferGeometry, Color, DirectionalLight, DoubleSide, GridHelper, Group,
+  AmbientLight, AxesHelper, Box3, BoxGeometry, BufferAttribute, BufferGeometry, CanvasTexture, Color, DirectionalLight, DoubleSide, GridHelper, Group,
   Line, LineBasicMaterial, LineSegments, Matrix4, Mesh, MeshBasicMaterial, PerspectiveCamera, Points, PointsMaterial, Quaternion, Raycaster, Scene,
-  SphereGeometry, SRGBColorSpace, Vector2, Vector3, WebGLRenderer,
+  SphereGeometry, Sprite, SpriteMaterial, SRGBColorSpace, Vector2, Vector3, WebGLRenderer,
 } from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { TransformControls } from "three/addons/controls/TransformControls.js";
@@ -9,10 +9,52 @@ import type { PaintedPath, PaintedPoint, TrackingViewFrame } from "../../api/typ
 import { decodeV1Tile, normalizeManifest, selectV1Tiles } from "../point-cloud/v1";
 import type { CameraItem, MapTransformData, PaintDataDelta, PointCloudSource, RegistrationView, TransformMode, ViewerEngine as Contract, ViewerFilters, ViewerMetrics, ViewerMode, ViewerOptions, ViewerSelection } from "./types";
 
-export const T_V_W = new Matrix4().set(1, 0, 0, 0, 0, 0, -1, 0, 0, 1, 0, 0, 0, 0, 0, 1);
+// Identity matrix perfectly matches Open3D: +X right, +Y up, +Z out of screen. (Board is vertical).
+export const T_V_W = new Matrix4().identity();
 export function worldToViewer(value: [number, number, number] | number[]): Vector3 {
   return new Vector3(value[0], value[1], value[2]).applyMatrix4(T_V_W);
 }
+function makeTextSprite(text: string, colorHex: string): Sprite {
+  const canvas = document.createElement("canvas");
+  canvas.width = 64;
+  canvas.height = 64;
+  const ctx = canvas.getContext("2d");
+  if (ctx) {
+    ctx.font = "Bold 44px sans-serif";
+    ctx.fillStyle = colorHex;
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText(text, 32, 32);
+  }
+  const texture = new CanvasTexture(canvas);
+  texture.needsUpdate = true;
+  const material = new SpriteMaterial({ map: texture, depthTest: false });
+  const sprite = new Sprite(material);
+  sprite.scale.set(0.04, 0.04, 1);
+  return sprite;
+}
+
+export function createLabeledAxes(size = 0.15): Group {
+  const axesGroup = new Group();
+  axesGroup.name = "labeled_axes";
+  const axes = new AxesHelper(size);
+  axesGroup.add(axes);
+
+  const labelX = makeTextSprite("X", "#ff4d4d");
+  labelX.position.set(size + 0.02, 0, 0);
+  axesGroup.add(labelX);
+
+  const labelY = makeTextSprite("Y", "#4dff4d");
+  labelY.position.set(0, size + 0.02, 0);
+  axesGroup.add(labelY);
+
+  const labelZ = makeTextSprite("Z", "#4d94ff");
+  labelZ.position.set(0, 0, size + 0.02);
+  axesGroup.add(labelZ);
+
+  return axesGroup;
+}
+
 function disposeGroup(group: Group): void {
   group.traverse((object) => {
     const renderable = object as Mesh | Line | Points;
@@ -57,11 +99,12 @@ export class ViewerEngine implements Contract {
   private filters: ViewerFilters = { showMap: true, showFrames: true, showProbe: true, showBoard: true, showPoints: true, showPaths: true, pointSize: .012, pointBudget: 3_000_000 };
   private probeGeometry: number[][] | null = null;
   private probeGroup: Group | null = null;
+  private cameraIntrinsics?: { matrix: number[]; width: number; height: number; };
   private isAruco: boolean = false;
   public onCameraSelect?: (camera: CameraItem) => void;
 
   private getViewerTransform(): Matrix4 {
-    return this.isAruco ? T_V_W.clone().multiply(new Matrix4().makeRotationX(Math.PI)) : T_V_W.clone();
+    return T_V_W.clone();
   }
   
   private worldToViewer(value: [number, number, number] | number[]): Vector3 {
@@ -94,7 +137,9 @@ export class ViewerEngine implements Contract {
     this.transformPivot.add(this.map);
     this.map.add(this.camerasGroup);
     this.scene.add(this.transformPivot, this.registration, this.tracking, this.paint, this.helpers, this.transformControls.getHelper(), new AmbientLight(0xa7b9cd, 1.3), new DirectionalLight(0xffffff, 1.7));
-    const grid = new GridHelper(10, 50, 0x29415a, 0x162332); grid.material.opacity = .42; grid.material.transparent = true; this.helpers.add(grid, new AxesHelper(.08));
+    const grid = new GridHelper(10, 50, 0x29415a, 0x162332); grid.material.opacity = .42; grid.material.transparent = true; 
+    const worldAxes = createLabeledAxes(0.15);
+    this.helpers.add(grid, worldAxes);
     this.renderer.domElement.addEventListener("webglcontextlost", this.onLost); this.renderer.domElement.addEventListener("webglcontextrestored", this.onRestored);
 
     // Camera pyramid click picking
@@ -339,7 +384,7 @@ export class ViewerEngine implements Contract {
   setRegistration(value: RegistrationView): void {
     if (!this.initialized || this.disposed) return; disposeGroup(this.registration);
     
-    this.isAruco = Boolean(value.board_definition?.layout || value.board_definition);
+    this.isAruco = Boolean((value as any).is_aruco_mode || value.board_definition?.layout || value.board_definition);
     const tvw = this.getViewerTransform();
     
     if (value.board_definition?.layout) {
@@ -417,7 +462,7 @@ export class ViewerEngine implements Contract {
         this.registration.add(boardGroup);
       }
     } else {
-      const board = new AxesHelper(.12);
+      const board = createLabeledAxes(.12);
       if (value.t_w_b?.length === 16) board.applyMatrix4(tvw.clone().multiply(new Matrix4().fromArray(value.t_w_b).transpose()));
       else board.applyMatrix4(tvw);
       this.registration.add(board);
@@ -428,12 +473,26 @@ export class ViewerEngine implements Contract {
     this.visibility();
   }
 
-  setProbeGeometry(geometry: number[][]): void {
-    this.probeGeometry = geometry;
+  setProbeGeometry(points: number[][]): void {
+    this.probeGeometry = points;
+    this.rebuildProbeGroup();
+  }
+
+  setCameraIntrinsics(intrinsics: { matrix: number[]; width: number; height: number; }): void {
+    this.cameraIntrinsics = intrinsics;
+    const existing = this.camerasGroup.getObjectByName("live_cam");
+    if (existing) {
+      existing.removeFromParent();
+      if (existing instanceof LineSegments) existing.geometry.dispose();
+    }
+  }
+
+  rebuildProbeGroup(): void {
     if (this.probeGroup) disposeGroup(this.probeGroup);
+    if (!this.probeGeometry) return;
     this.probeGroup = new Group();
     
-    const pts = geometry.map(p => new Vector3(p[0], p[1], p[2]));
+    const pts = this.probeGeometry.map(p => new Vector3(p[0], p[1], p[2]));
     const group = this.probeGroup;
     const geom = new BufferGeometry().setFromPoints(pts);
     group.add(new Line(geom, new LineBasicMaterial({ color: 0xffea00, linewidth: 2 })));
@@ -472,7 +531,14 @@ export class ViewerEngine implements Contract {
 
     let camMesh = this.camerasGroup.getObjectByName("live_cam") as LineSegments | undefined;
     if (!camMesh) {
-      const w = 0.08, h = 0.06, d = 0.12;
+      let w = 0.045, h = 0.08, d = 0.12;
+      if (this.cameraIntrinsics) {
+        const { matrix, width, height } = this.cameraIntrinsics;
+        const fx = matrix[0];
+        const fy = matrix[4];
+        w = d * width / (2 * fx);
+        h = d * height / (2 * fy);
+      }
       const vertices = new Float32Array([
         0, 0, 0, w, h, d, 0, 0, 0, -w, h, d,
         0, 0, 0, -w, -h, d, 0, 0, 0, w, -h, d,
@@ -497,6 +563,7 @@ export class ViewerEngine implements Contract {
       const viewerMat = this.getViewerTransform().multiply(mat);
       viewerMat.decompose(camMesh.position, camMesh.quaternion, camMesh.scale);
       camMesh.scale.multiplyScalar(this.camScale);
+      console.log(`📷 [3D Viewer] Live Camera Position Updated: X=${camMesh.position.x.toFixed(3)} Y=${camMesh.position.y.toFixed(3)} Z=${camMesh.position.z.toFixed(3)}`);
     } else {
       camMesh.visible = false;
     }

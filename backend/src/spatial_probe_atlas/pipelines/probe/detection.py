@@ -61,7 +61,7 @@ def detect_blobs(
         return {"candidate_count": len(points), "tracked": False, "errors": [], "keypoints": points}
 
     points_sorted = sorted(points, key=lambda p: p["diameter"], reverse=True)
-    candidates = np.asarray([[p["x"], p["y"]] for p in points_sorted[:8]], dtype=np.float32)
+    candidates = np.asarray([[p["x"], p["y"]] for p in points_sorted[:6]], dtype=np.float32)
     if marker_points_m is not None and len(marker_points_m) == 5:
         object_points = np.asarray(marker_points_m, dtype=np.float32)
     else:
