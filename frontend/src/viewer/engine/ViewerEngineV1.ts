@@ -480,7 +480,7 @@ export class ViewerEngine implements Contract {
 
   setCameraIntrinsics(intrinsics: { matrix: number[]; width: number; height: number; }): void {
     this.cameraIntrinsics = intrinsics;
-    const existing = this.camerasGroup.getObjectByName("live_cam");
+    const existing = this.tracking.getObjectByName("live_cam");
     if (existing) {
       existing.removeFromParent();
       if (existing instanceof LineSegments) existing.geometry.dispose();
@@ -529,7 +529,7 @@ export class ViewerEngine implements Contract {
       if (value.tip_w_m) { tip.position.copy(this.worldToViewer(value.tip_w_m)); (tip.material as MeshBasicMaterial).color.set(value.quality === "good" ? 0x61e2b1 : value.quality === "warning" ? 0xf2bd55 : 0xff7479); }
     }
 
-    let camMesh = this.camerasGroup.getObjectByName("live_cam") as LineSegments | undefined;
+    let camMesh = this.tracking.getObjectByName("live_cam") as LineSegments | undefined;
     if (!camMesh) {
       let w = 0.045, h = 0.08, d = 0.12;
       if (this.cameraIntrinsics) {
@@ -550,10 +550,7 @@ export class ViewerEngine implements Contract {
       geom.setAttribute("position", new BufferAttribute(vertices, 3));
       camMesh = new LineSegments(geom, new LineBasicMaterial({ color: 0x00ffcc, linewidth: 3 }));
       camMesh.name = "live_cam";
-      if (this.camerasGroup.parent !== this.map) {
-        this.map.add(this.camerasGroup);
-      }
-      this.camerasGroup.add(camMesh);
+      this.tracking.add(camMesh);
     }
 
     const isTracked = value.camera_state === "tracked" || Boolean(t_w_c);
