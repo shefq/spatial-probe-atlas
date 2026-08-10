@@ -28,13 +28,33 @@ PROBE_POINTS = [
 ]
 
 
+_BLOB_DETECTOR_CACHE: dict[tuple, Any] = {}
+
+def _get_blob_detector(cv2: Any, settings: dict[str, Any]) -> Any:
+    key_fields = ("minThreshold", "maxThreshold", "thresholdStep", "minRepeatability", "minDistBetweenBlobs", "blobColor", "filterByColor", "minArea", "maxArea", "filterByArea", "minCircularity", "maxCircularity", "filterByCircularity", "minInertiaRatio", "maxInertiaRatio", "filterByInertia", "minConvexity", "maxConvexity", "filterByConvexity")
+    cache_key = tuple(settings.get(f) for f in key_fields)
+    if cache_key not in _BLOB_DETECTOR_CACHE:
+        params = cv2.SimpleBlobDetector_Params()
+        for field in ("minThreshold", "maxThreshold", "thresholdStep", "minDistBetweenBlobs", "minArea", "maxArea", "minCircularity", "maxCircularity", "minInertiaRatio", "maxInertiaRatio", "minConvexity", "maxConvexity"):
+            setattr(params, field, float(settings[field]))
+        params.minRepeatability = int(settings["minRepeatability"])
+        if params.maxThreshold <= params.minThreshold + params.thresholdStep:
+            params.minRepeatability = 1
+        params.blobColor = int(settings["blobColor"])
+        for field in ("filterByColor", "filterByArea", "filterByCircularity", "filterByInertia", "filterByConvexity"):
+            setattr(params, field, bool(settings[field]))
+        _BLOB_DETECTOR_CACHE[cache_key] = cv2.SimpleBlobDetector_create(params)
+    return _BLOB_DETECTOR_CACHE[cache_key]
+
+
 def detect_blobs(
-    rgb: bytes,
+    rgb: bytes | np.ndarray,
     width: int,
     height: int,
     settings: dict[str, Any],
     intrinsic_matrix: list[float] | np.ndarray | None = None,
     marker_points_m: list[list[float]] | np.ndarray | None = None,
+    gray_image: np.ndarray | None = None,
 ) -> dict[str, Any]:
     errors = validate_blob_detector(settings)
     if errors:
@@ -43,18 +63,17 @@ def detect_blobs(
         import cv2  # type: ignore
     except Exception:
         return {"candidate_count": 0, "tracked": False, "errors": ["opencv_not_available"], "keypoints": []}
-    image = np.frombuffer(rgb, dtype=np.uint8).reshape(height, width, 3)
-    gray = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
-    params = cv2.SimpleBlobDetector_Params()
-    for field in ("minThreshold", "maxThreshold", "thresholdStep", "minDistBetweenBlobs", "minArea", "maxArea", "minCircularity", "maxCircularity", "minInertiaRatio", "maxInertiaRatio", "minConvexity", "maxConvexity"):
-        setattr(params, field, float(settings[field]))
-    params.minRepeatability = int(settings["minRepeatability"])
-    if params.maxThreshold <= params.minThreshold + params.thresholdStep:
-        params.minRepeatability = 1
-    params.blobColor = int(settings["blobColor"])
-    for field in ("filterByColor", "filterByArea", "filterByCircularity", "filterByInertia", "filterByConvexity"):
-        setattr(params, field, bool(settings[field]))
-    keypoints = cv2.SimpleBlobDetector_create(params).detect(gray)
+        
+    if gray_image is not None:
+        gray = gray_image
+    elif isinstance(rgb, np.ndarray):
+        gray = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY) if rgb.ndim == 3 else rgb
+    else:
+        image = np.frombuffer(rgb, dtype=np.uint8).reshape(height, width, 3)
+        gray = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
+        
+    detector = _get_blob_detector(cv2, settings)
+    keypoints = detector.detect(gray)
     points = [{"x": float(item.pt[0]), "y": float(item.pt[1]), "diameter": float(item.size), "response": float(item.response)} for item in keypoints]
 
     if len(points) < 5:

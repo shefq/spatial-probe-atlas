@@ -274,29 +274,47 @@ def optimize_joint(
     return result.x
 
 
+_ARUCO_DETECTOR_CACHE: dict[str, Any] = {}
+
+def get_aruco_detector(cv2: Any, dictionary_name: str = "DICT_4X4_50") -> Any | None:
+    if not hasattr(cv2.aruco, dictionary_name):
+        return None
+    if dictionary_name not in _ARUCO_DETECTOR_CACHE:
+        dictionary_id = int(getattr(cv2.aruco, dictionary_name))
+        dictionary = cv2.aruco.getPredefinedDictionary(dictionary_id)
+        params = cv2.aruco.DetectorParameters()
+        params.cornerRefinementMethod = cv2.aruco.CORNER_REFINE_SUBPIX
+        _ARUCO_DETECTOR_CACHE[dictionary_name] = cv2.aruco.ArucoDetector(dictionary, params)
+    return _ARUCO_DETECTOR_CACHE[dictionary_name]
+
+
 def detect_aruco(
-    rgb: bytes,
+    rgb: bytes | np.ndarray,
     width: int,
     height: int,
     dictionary_name: str = "DICT_4X4_50",
     expected_ids: Iterable[int] | None = None,
+    gray_image: np.ndarray | None = None,
+    detector: Any | None = None,
 ) -> tuple[dict[int, list[list[float]]], Any]:
     try:
         import cv2  # type: ignore
     except Exception:
         return {}, None
 
-    if not hasattr(cv2.aruco, dictionary_name):
+    if detector is None:
+        detector = get_aruco_detector(cv2, dictionary_name)
+    if detector is None:
         return {}, None
-    
-    dictionary_id = int(getattr(cv2.aruco, dictionary_name))
-    dictionary = cv2.aruco.getPredefinedDictionary(dictionary_id)
-    params = cv2.aruco.DetectorParameters()
-    params.cornerRefinementMethod = cv2.aruco.CORNER_REFINE_SUBPIX
-    detector = cv2.aruco.ArucoDetector(dictionary, params)
 
-    image = np.frombuffer(rgb, dtype=np.uint8).reshape(height, width, 3)
-    gray = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
+    if gray_image is not None:
+        gray = gray_image
+    elif isinstance(rgb, np.ndarray):
+        gray = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY) if rgb.ndim == 3 else rgb
+    else:
+        image = np.frombuffer(rgb, dtype=np.uint8).reshape(height, width, 3)
+        gray = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
+
     corners, ids, rejected = detector.detectMarkers(gray)
 
     detections = {}

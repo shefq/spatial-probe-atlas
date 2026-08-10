@@ -84,6 +84,8 @@ class CpuTrackingPipeline:
         self.camera_state = TrackingState()
         self.probe_state = TrackingState()
         self.camera_min_inliers = CAMERA_MIN_INLIERS
+        self._last_probe_rvec: np.ndarray | None = None
+        self._last_probe_tvec: np.ndarray | None = None
         scale = float((similarity or {}).get("scale", 1.0))
         rotation = np.asarray((similarity or {}).get("rotation", np.eye(3).reshape(-1)), dtype=float).reshape(3, 3)
         translation = np.asarray((similarity or {}).get("translation", [0, 0, 0]), dtype=float)
@@ -108,10 +110,15 @@ class CpuTrackingPipeline:
                 world_points[index] = scale * (rotation @ point_m0) + translation
             self.references.append({"descriptors": descriptors, "world_points": world_points})
 
-    def _localize(self, frame: NormalizedCameraFrame) -> tuple[np.ndarray | None, int, float, str | None]:
+    def _localize(self, frame: NormalizedCameraFrame, gray_image: np.ndarray | None = None) -> tuple[np.ndarray | None, int, float, str | None]:
         cv2 = self.cv2
-        rgb = np.frombuffer(frame.rgb, dtype=np.uint8).reshape(frame.height, frame.width, 3)
-        gray = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY)
+        if gray_image is not None:
+            gray = gray_image
+        elif isinstance(frame.rgb, np.ndarray):
+            gray = frame.rgb if frame.rgb.ndim == 2 else cv2.cvtColor(frame.rgb, cv2.COLOR_RGB2GRAY)
+        else:
+            rgb = np.frombuffer(frame.rgb, dtype=np.uint8).reshape(frame.height, frame.width, 3)
+            gray = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY)
         current_keypoints, current_descriptors = self.sift.detectAndCompute(gray, None)
         if current_descriptors is None:
             return None, 0, math.inf, "no_current_descriptors"
@@ -137,38 +144,90 @@ class CpuTrackingPipeline:
                 best = (t_w_c, inlier_count, error, None)
         return best
 
-    def _probe_pose(self, frame: NormalizedCameraFrame) -> tuple[np.ndarray | None, int, float, str | None, int]:
+    def _probe_pose(self, frame: NormalizedCameraFrame, gray_image: np.ndarray | None = None) -> tuple[np.ndarray | None, int, float, str | None, int]:
         cv2 = self.cv2
         marker_points = np.asarray(self.calibration["probe"]["marker_points_m"], dtype=np.float32)
-        result = detect_blobs(frame.rgb, frame.width, frame.height, self.calibration["blob_detector"], intrinsic_matrix=frame.intrinsic_matrix, marker_points_m=marker_points)
+        result = detect_blobs(frame.rgb, frame.width, frame.height, self.calibration["blob_detector"], intrinsic_matrix=frame.intrinsic_matrix, marker_points_m=marker_points, gray_image=gray_image)
         points = result.get("keypoints", [])
         candidate_count = len(points)
         if candidate_count < 5:
+            self._last_probe_rvec = self._last_probe_tvec = None
             return None, 0, math.inf, "fewer_than_five_blobs", candidate_count
+            
         candidates = np.asarray([[item["x"], item["y"]] for item in points[:6]], dtype=np.float32)
         k = np.asarray(frame.intrinsic_matrix, dtype=float).reshape(3, 3)
+
+        # --- Fast Temporal Prediction (0.05ms) ---
+        if self._last_probe_rvec is not None and self._last_probe_tvec is not None and len(candidates) >= 5:
+            proj, _ = cv2.projectPoints(marker_points, self._last_probe_rvec, self._last_probe_tvec, k, None)
+            proj_2d = proj[:, 0]
+            matched_indices = []
+            used_candidates = set()
+            for pt in proj_2d:
+                dists = np.linalg.norm(candidates - pt, axis=1)
+                best_idx = int(np.argmin(dists))
+                if dists[best_idx] < 35.0 and best_idx not in used_candidates:
+                    matched_indices.append(best_idx)
+                    used_candidates.add(best_idx)
+                else:
+                    break
+            if len(matched_indices) == 5:
+                ordered_pts = candidates[matched_indices]
+                ok, rvec_t, tvec_t = cv2.solvePnP(marker_points, ordered_pts, k, None, self._last_probe_rvec.copy(), self._last_probe_tvec.copy(), True, flags=cv2.SOLVEPNP_ITERATIVE)
+                if ok and tvec_t[2, 0] > 0:
+                    proj_check, _ = cv2.projectPoints(marker_points, rvec_t, tvec_t, k, None)
+                    err_t = float(np.sqrt(np.mean(np.sum((proj_check[:, 0] - ordered_pts) ** 2, axis=1))))
+                    if err_t <= PROBE_MAX_REPROJECTION_ERROR_PX:
+                        self._last_probe_rvec, self._last_probe_tvec = rvec_t, tvec_t
+                        rotation_c_m, _ = cv2.Rodrigues(rvec_t)
+                        pose = np.eye(4); pose[:3, :3] = rotation_c_m; pose[:3, 3] = tvec_t[:, 0]
+                        return pose, 5, err_t, None, candidate_count
+
+        # --- Fast 120-Permutation Fallback Search (1.2ms) ---
         best: tuple[np.ndarray | None, int, float, str | None, int] = (None, 0, math.inf, "probe_correspondence_failed", candidate_count)
+        best_rvec, best_tvec = None, None
         for selection in itertools.combinations(range(len(candidates)), 5):
             selected = candidates[list(selection)]
             for permutation in itertools.permutations(range(5)):
                 image_points = selected[list(permutation)]
-                success, rvec, tvec, inliers = cv2.solvePnPRansac(marker_points, image_points, k, None, iterationsCount=60, reprojectionError=2.5, confidence=0.995, flags=cv2.SOLVEPNP_EPNP)
-                count = 0 if not success or inliers is None else len(inliers)
-                if not success or count < PROBE_MIN_INLIERS or float(tvec[2, 0]) <= 0:
+                success, rvec, tvec = cv2.solvePnP(marker_points, image_points, k, None, flags=cv2.SOLVEPNP_EPNP)
+                if not success or tvec[2, 0] <= 0:
                     continue
-                success, rvec, tvec = cv2.solvePnP(marker_points[inliers[:, 0]], image_points[inliers[:, 0]], k, None, rvec, tvec, True, flags=cv2.SOLVEPNP_ITERATIVE)
-                projected, _ = cv2.projectPoints(marker_points, rvec, tvec, k, None)
-                error = float(np.sqrt(np.mean(np.sum((projected[:, 0] - image_points) ** 2, axis=1))))
+                proj, _ = cv2.projectPoints(marker_points, rvec, tvec, k, None)
+                error = float(np.sqrt(np.mean(np.sum((proj[:, 0] - image_points) ** 2, axis=1))))
+                if error > 5.0:
+                    continue
+                success_i, rvec_i, tvec_i = cv2.solvePnP(marker_points, image_points, k, None, rvec, tvec, True, flags=cv2.SOLVEPNP_ITERATIVE)
+                if success_i:
+                    rvec, tvec = rvec_i, tvec_i
+                    proj_i, _ = cv2.projectPoints(marker_points, rvec, tvec, k, None)
+                    error = float(np.sqrt(np.mean(np.sum((proj_i[:, 0] - image_points) ** 2, axis=1))))
+                    
                 rotation_c_m, _ = cv2.Rodrigues(rvec)
                 pose = np.eye(4); pose[:3, :3] = rotation_c_m; pose[:3, 3] = tvec[:, 0]
-                if count > best[1] or (count == best[1] and error < best[2]):
-                    best = (pose, count, error, None, candidate_count)
+                if 5 > best[1] or (5 == best[1] and error < best[2]):
+                    best = (pose, 5, error, None, candidate_count)
+                    best_rvec, best_tvec = rvec, tvec
+
+        if best[0] is not None:
+            self._last_probe_rvec, self._last_probe_tvec = best_rvec, best_tvec
+        else:
+            self._last_probe_rvec = self._last_probe_tvec = None
+            
         return best
 
-    def track(self, session_id: str, frame: NormalizedCameraFrame) -> dict[str, Any]:
+    def track(self, session_id: str, frame: NormalizedCameraFrame, gray_image: np.ndarray | None = None) -> dict[str, Any]:
         started = time.monotonic_ns()
-        raw_w_c, camera_inliers, camera_error, camera_reason = self._localize(frame)
-        raw_c_m, probe_inliers, probe_error, probe_reason, blob_count = self._probe_pose(frame)
+        cv2 = self.cv2
+        if gray_image is None:
+            if isinstance(frame.rgb, np.ndarray):
+                gray_image = frame.rgb if frame.rgb.ndim == 2 else cv2.cvtColor(frame.rgb, cv2.COLOR_RGB2GRAY)
+            else:
+                rgb = np.frombuffer(frame.rgb, dtype=np.uint8).reshape(frame.height, frame.width, 3)
+                gray_image = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY)
+                
+        raw_w_c, camera_inliers, camera_error, camera_reason = self._localize(frame, gray_image=gray_image)
+        raw_c_m, probe_inliers, probe_error, probe_reason, blob_count = self._probe_pose(frame, gray_image=gray_image)
         camera_acceptable = raw_w_c is not None and camera_inliers >= self.camera_min_inliers and camera_error <= CAMERA_MAX_REPROJECTION_ERROR_PX
         probe_acceptable = raw_c_m is not None and probe_inliers >= PROBE_MIN_INLIERS and probe_error <= PROBE_MAX_REPROJECTION_ERROR_PX
         camera_state, t_w_c, camera_temporal = self.camera_state.update(raw_w_c if camera_acceptable else None)

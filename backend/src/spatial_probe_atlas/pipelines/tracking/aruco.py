@@ -6,7 +6,7 @@ from typing import Any
 import numpy as np
 
 from spatial_probe_atlas.ports.camera import NormalizedCameraFrame
-
+from spatial_probe_atlas.pipelines.aruco import get_aruco_detector
 from .cpu import CpuTrackingPipeline, TrackingState
 
 
@@ -24,6 +24,8 @@ class ArucoTrackingPipeline(CpuTrackingPipeline):
         self.calibration = calibration
         self.camera_state = TrackingState()
         self.probe_state = TrackingState()
+        self._last_probe_rvec: np.ndarray | None = None
+        self._last_probe_tvec: np.ndarray | None = None
         
         board_def = registration.get("board_definition", {})
         self.dictionary_name = board_def.get("dictionary", "DICT_4X4_50")
@@ -35,11 +37,12 @@ class ArucoTrackingPipeline(CpuTrackingPipeline):
         self.marker_layout = {int(k): np.asarray(v, dtype=np.float64) for k, v in layout.items()}
         self.references = []
         self.camera_min_inliers = 4
+        self.detector = get_aruco_detector(cv2, self.dictionary_name)
 
-    def _localize(self, frame: NormalizedCameraFrame) -> tuple[np.ndarray | None, int, float | None, str | None]:
+    def _localize(self, frame: NormalizedCameraFrame, gray_image: np.ndarray | None = None) -> tuple[np.ndarray | None, int, float | None, str | None]:
         from spatial_probe_atlas.pipelines.aruco import detect_aruco, estimate_board_pose, matrix_from_pose
         
-        detections, _ = detect_aruco(frame.rgb, frame.width, frame.height, self.dictionary_name, self.marker_ids)
+        detections, _ = detect_aruco(frame.rgb, frame.width, frame.height, self.dictionary_name, self.marker_ids, gray_image=gray_image, detector=self.detector)
         if not detections:
             return None, 0, math.inf, "no_aruco_markers_detected"
             
@@ -58,8 +61,8 @@ class ArucoTrackingPipeline(CpuTrackingPipeline):
 
     localize_camera = _localize
 
-    def track(self, session_id: str, frame: NormalizedCameraFrame) -> dict[str, Any]:
-        result = super().track(session_id, frame)
+    def track(self, session_id: str, frame: NormalizedCameraFrame, gray_image: np.ndarray | None = None) -> dict[str, Any]:
+        result = super().track(session_id, frame, gray_image=gray_image)
         result["is_aruco_mode"] = True
         return result
 
