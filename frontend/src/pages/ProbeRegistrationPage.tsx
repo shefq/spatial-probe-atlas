@@ -283,11 +283,30 @@ export function ProbeRegistrationPage() {
       setSelectedCalibrationId(result.probe_calibration.id);
       setRegistrations((items) => [result.registration, ...items]);
       setSelectedRegistrationId(result.registration.id);
+      
+      let mapMsg = "";
+      if (activeMap?.id) {
+        await probeWorkflowApi.arucoAlignMap(projectId, activeMap.id, capture.id, parsedIds, 0.020);
+        mapMsg = " and map aligned to board";
+      }
+      
       setCapture(null);
-      pushToast({ kind: "success", title: "ArUco Joint Calibration complete" });
+      pushToast({ kind: "success", title: `ArUco Joint Calibration complete${mapMsg}` });
     } catch (value) { setError(errorMessage(value)); }
     finally { setBusy(false); }
   };
+  
+  const alignMapFromSfm = async () => {
+    if (!activeMap?.id) return;
+    setBusy(true);
+    try {
+      const parsedIds = arucoIdsStr.split(",").map((s) => parseInt(s.trim(), 10)).filter((n) => !isNaN(n));
+      await probeWorkflowApi.arucoAlignMap(projectId, activeMap.id, undefined, parsedIds, 0.020);
+      pushToast({ kind: "success", title: "Map aligned directly from SFM markers" });
+    } catch (value) { setError(errorMessage(value)); }
+    finally { setBusy(false); }
+  };
+
   const registrationAction = async (action: "observe" | "solve" | "validate" | "accept" | "activate") => {
     if (!selectedRegistration) return;
     if (action === "observe" && observationMode === "kinematic" && !kinematicPose) {
@@ -449,7 +468,12 @@ export function ProbeRegistrationPage() {
                   title="Solve & Activate" 
                   state={selectedRegistration?.active && (selectedRegistration as any)?.is_aruco_mode ? "complete" : (capture?.accepted_frame_count ?? 0) >= 3 ? "active" : "pending"} 
                   detail="Solves probe geometry, board layout, and creates active registration." 
-                  action={(capture?.accepted_frame_count ?? 0) >= 3 ? <Button size="sm" variant="primary" busy={busy} onClick={() => void solveArucoCalibration()}>Solve & Activate</Button> : null} 
+                  action={
+                    <div className="button-row">
+                      {(capture?.accepted_frame_count ?? 0) >= 3 ? <Button size="sm" variant="primary" busy={busy} onClick={() => void solveArucoCalibration()}>Solve & Activate</Button> : null}
+                      {activeMap?.id ? <Button size="sm" variant="default" busy={busy} onClick={() => void alignMapFromSfm()}>Align Map (SFM Only)</Button> : null}
+                    </div>
+                  } 
                 />
               </ol>
             </Card>

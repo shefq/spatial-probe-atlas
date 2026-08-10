@@ -32,5 +32,7 @@ export const probeWorkflowApi = {
   arucoCapture: (projectId: string, captureId?: string, markerIds?: number[]) =>
     json<{ probe_capture: ProbeCapture }>(`/projects/${projectId}/aruco-calibrations/capture`, { capture_id: captureId, marker_ids: markerIds }),
   arucoSolve: (projectId: string, captureId: string, markerIds?: number[], anchorId?: number, activate = true) =>
-    json<{ probe_calibration: ProbeCalibration; registration: any }>(`/projects/${projectId}/aruco-calibrations/solve`, { probe_capture_id: captureId, marker_ids: markerIds, anchor_id: anchorId, activate }),
+    json<{ probe_calibration: ProbeCalibration; registration: any }>(`/projects/${projectId}/aruco-calibrations/solve`, { probe_capture_id: captureId, markerIds, anchorId, activate }),
+  arucoAlignMap: (projectId: string, mapId: string, captureId?: string, markerIds?: number[], nominalMarkerSizeM?: number) =>
+    json<any>(`/projects/${projectId}/maps/${mapId}/align-aruco`, { probe_capture_id: captureId || undefined, marker_ids: markerIds, nominal_marker_size_m: nominalMarkerSizeM }),
 };

@@ -219,6 +219,16 @@ async def capture_joint_frames(request: Request, project_id: str, body: dict[str
         tracked = diagnostics["tracked"] and len(aruco_detections) >= 1
         diagnostics["aruco_detections"] = aruco_detections
         
+        # Save image for later map alignment
+        try:
+            import cv2
+            capture_dir = container.catalog.artifacts.project_path(project_id, f"probe_captures/{capture_id}")
+            capture_dir.mkdir(parents=True, exist_ok=True)
+            image = np.frombuffer(frame.rgb, dtype=np.uint8).reshape(frame.height, frame.width, 3)
+            cv2.imwrite(str(capture_dir / f"{frame.sequence:06d}.jpg"), cv2.cvtColor(image, cv2.COLOR_RGB2BGR))
+        except Exception:
+            pass
+
         item = container.catalog.create_resource(project_id, "probe_capture_frame", state="accepted" if tracked else "rejected", parent_id=capture_id, payload={"sequence": frame.sequence, "timestamp_ns": frame.device_timestamp_ns, "width": frame.width, "height": frame.height, "intrinsic_matrix": list(frame.intrinsic_matrix), "diagnostics": diagnostics})
         items.append(item)
 
@@ -345,17 +355,28 @@ def list_probe_calibrations(request: Request, project_id: str) -> dict[str, Any]
 @router.post("/projects/{project_id}/probe-calibrations", status_code=201)
 def create_probe_calibration(request: Request, project_id: str, body: dict[str, Any]) -> dict[str, Any]:
     container = request.app.state.container
-    capture_id = str(body.get("probe_capture_id", ""))
+    capture_id = str(body.get("probe_capture_id") or body.get("capture_set_id") or "")
+    
     capture = container.catalog.get_resource(project_id, "probe_capture", capture_id)
-    frames = container.catalog.list_resources(project_id, "probe_capture_frame", parent_id=capture_id, limit=1000)
-    accepted = [item for item in frames if item["state"] == "accepted"]
+    if capture:
+        frames = container.catalog.list_resources(project_id, "probe_capture_frame", parent_id=capture_id, limit=1000)
+    else:
+        capture = container.catalog.get_resource(project_id, "capture_set", capture_id)
+        if not capture:
+            raise AppError("CAPTURE_NOT_FOUND", "No probe capture or capture set found with that ID.", status_code=404)
+        frames = container.catalog.list_resources(project_id, "capture_frame", parent_id=capture_id, limit=1000)
+        
+    accepted = [item for item in frames if item.get("state") == "accepted" or item.get("included", True)]
     if len(accepted) < 3:
         raise AppError("PROBE_CALIBRATION_VIEWS_INSUFFICIENT", "At least 3 valid probe views are required; 15-25 are recommended.", status_code=422, details={"accepted_views": len(accepted)})
     portable = _portable_calibration(str(body.get("name") or "Five-marker probe"), len(frames), len(accepted), container.catalog.get_project(project_id)["name"])
     calibration_id = portable["calibration_id"]
     artifact = container.artifacts.atomic_write_json(container.artifacts.project_path(project_id, Path("calibrations/probe") / f"{calibration_id}.json"), portable)
     result = container.catalog.create_resource(project_id, "probe_calibration", state="valid", name=portable["name"], parent_id=capture_id, resource_id=calibration_id, payload={**portable, "artifact": artifact, "checksum": _checksum(portable), "source_frame_ids": [item["id"] for item in accepted]})
-    container.catalog.update_resource(project_id, "probe_capture", capture_id, state="ready")
+    
+    # Update capture state only if it's a probe capture (capture sets don't need 'ready' state)
+    if container.catalog.get_resource(project_id, "probe_capture", capture_id):
+        container.catalog.update_resource(project_id, "probe_capture", capture_id, state="ready")
     return container.catalog.activate(project_id, "probe_calibration", result["probe_calibration_id"]) if bool(body.get("activate", True)) else result
 
 

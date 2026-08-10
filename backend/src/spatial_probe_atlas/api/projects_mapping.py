@@ -370,6 +370,116 @@ def _extract_colmap_cameras(container: Any, project_id: str, map_dir: Path, capt
         return []
 
 
+@router.post("/projects/{project_id}/maps/{map_id}/align-aruco")
+def align_map_to_aruco_endpoint(request: Request, project_id: str, map_id: str, body: dict[str, Any]) -> dict[str, Any]:
+    from spatial_probe_atlas.pipelines.mapping.align import align_map_to_aruco
+    container = request.app.state.container
+    scene_map = container.catalog.get_resource(project_id, "scene_map", map_id)
+    
+    capture_id = body.get("probe_capture_id")
+    if capture_id:
+        frames = container.catalog.list_resources(project_id, "probe_capture_frame", parent_id=capture_id, limit=1000)
+    else:
+        capture_id = scene_map.get("parent_id")
+        frames = container.catalog.list_resources(project_id, "capture_frame", parent_id=capture_id, limit=1000)
+        
+    accepted = [f for f in frames if f.get("state") == "accepted" or f.get("included", True)]
+    if not accepted:
+        raise AppError("CAPTURE_EMPTY", "No accepted frames in the capture.", status_code=422)
+        
+    sfm_dir = container.catalog.artifacts.root / scene_map["sfm"]["relative_uri"]
+    
+    calibrations = []
+    if body.get("probe_capture_id"):
+        calibrations = container.catalog.list_resources(project_id, "probe_calibration", parent_id=capture_id, limit=1)
+    else:
+        active_calib_id = container.catalog.get_project(project_id).get("active_probe_calibration_id")
+        if active_calib_id:
+            calib = container.catalog.get_resource(project_id, "probe_calibration", active_calib_id)
+            if calib:
+                calibrations.append(calib)
+                
+    marker_ids = body.get("marker_ids", [6, 7, 5])
+    if not calibrations:
+        # Fallback to default 3-marker layout with 4 corners per marker
+        marker_size = float(body.get("nominal_marker_size_m", 0.035))
+        spacing = 0.07
+        half = marker_size / 2.0
+        board_dict = {}
+        for index, m_id in enumerate(marker_ids):
+            cx = (index - (len(marker_ids) - 1) / 2.0) * spacing
+            board_dict[m_id] = [
+                [cx - half, half, 0.0],
+                [cx + half, half, 0.0],
+                [cx + half, -half, 0.0],
+                [cx - half, -half, 0.0],
+            ]
+    else:
+        board_dict = calibrations[0]["board"]["layout"]
+        
+    board_layout = {int(k): np.asarray(v, dtype=np.float32) for k, v in board_dict.items()}
+    
+    solution = align_map_to_aruco(
+        artifact_root=container.catalog.artifacts.root,
+        sfm_dir=sfm_dir,
+        frames_metadata=accepted,
+        marker_ids=marker_ids,
+        board_layout=board_layout
+    )
+    
+    # Build board calibration payload definition
+    board_def = {
+        "dictionary": "DICT_4X4_50",
+        "marker_ids": [int(m) for m in marker_ids],
+        "anchor_id": int(marker_ids[1]) if len(marker_ids) > 1 else int(marker_ids[0]),
+        "marker_size_m": float(body.get("nominal_marker_size_m", 0.035)),
+        "layout": {str(k): (v.tolist() if isinstance(v, np.ndarray) else v) for k, v in board_dict.items()}
+    }
+    
+    # Update current active calibration's board data if exists, else create a calibration with board data only
+    active_calib_id = container.catalog.get_project(project_id).get("active_probe_calibration_id")
+    if active_calib_id:
+        container.catalog.update_resource(
+            project_id, "probe_calibration", active_calib_id,
+            payload_patch={"board": board_def}
+        )
+    else:
+        from spatial_probe_atlas.api.calibration_registration import _portable_calibration, _checksum
+        portable = _portable_calibration(
+            "ArUco Board Calibration (SFM)",
+            len(accepted),
+            len(accepted),
+            container.catalog.get_project(project_id).get("name")
+        )
+        portable["board"] = board_def
+        calib_id = portable["calibration_id"]
+        artifact = container.artifacts.atomic_write_json(
+            container.artifacts.project_path(project_id, Path("calibrations/probe") / f"{calib_id}.json"),
+            portable
+        )
+        created = container.catalog.create_resource(
+            project_id, "probe_calibration", state="valid", name=portable["name"],
+            resource_id=calib_id,
+            payload={**portable, "artifact": artifact, "checksum": _checksum(portable)}
+        )
+        container.catalog.activate(project_id, "probe_calibration", created["probe_calibration_id"])
+        
+    rotation_matrix = np.array(solution["rotation"]).reshape(3, 3)
+    from scipy.spatial.transform import Rotation
+    quaternion = Rotation.from_matrix(rotation_matrix).as_quat().tolist()
+    
+    return container.catalog.update_resource(
+        project_id, "scene_map", map_id, 
+        payload_patch={
+            "similarity_s_w_m0": solution,
+            "user_transform": {
+                "position": solution["translation"],
+                "quaternion": quaternion,
+                "scale": solution["scale"]
+            }
+        }
+    )
+
 @router.get("/projects/{project_id}/maps/{map_id}/point-cloud/manifest")
 def map_manifest(request: Request, project_id: str, map_id: str, response: Response) -> Any:
     scene_map = request.app.state.container.catalog.get_resource(project_id, "scene_map", map_id)

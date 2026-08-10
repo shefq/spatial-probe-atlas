@@ -106,7 +106,7 @@ export class ViewerEngine implements Contract {
   private getViewerTransform(): Matrix4 {
     return T_V_W.clone();
   }
-  
+
   private worldToViewer(value: [number, number, number] | number[]): Vector3 {
     return new Vector3(value[0], value[1], value[2]).applyMatrix4(this.getViewerTransform());
   }
@@ -137,7 +137,7 @@ export class ViewerEngine implements Contract {
     this.transformPivot.add(this.map);
     this.map.add(this.camerasGroup);
     this.scene.add(this.transformPivot, this.registration, this.tracking, this.paint, this.helpers, this.transformControls.getHelper(), new AmbientLight(0xa7b9cd, 1.3), new DirectionalLight(0xffffff, 1.7));
-    const grid = new GridHelper(10, 50, 0x29415a, 0x162332); grid.material.opacity = .42; grid.material.transparent = true; 
+    const grid = new GridHelper(10, 50, 0x29415a, 0x162332); grid.material.opacity = .42; grid.material.transparent = true;
     const worldAxes = createLabeledAxes(0.15);
     this.helpers.add(grid, worldAxes);
     this.renderer.domElement.addEventListener("webglcontextlost", this.onLost); this.renderer.domElement.addEventListener("webglcontextrestored", this.onRestored);
@@ -383,10 +383,10 @@ export class ViewerEngine implements Contract {
 
   setRegistration(value: RegistrationView): void {
     if (!this.initialized || this.disposed) return; disposeGroup(this.registration);
-    
+
     this.isAruco = Boolean((value as any).is_aruco_mode || value.board_definition?.layout || value.board_definition);
     const tvw = this.getViewerTransform();
-    
+
     if (value.board_definition?.layout) {
       const layout = value.board_definition.layout as Record<string, number[][]>;
       let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
@@ -405,7 +405,7 @@ export class ViewerEngine implements Contract {
         const height = Math.max(0.04, maxY - minY + 2 * margin);
         const centerX = (minX + maxX) / 2;
         const centerY = (minY + maxY) / 2;
-        
+
         // 1. Base board plate (Bright White/Slate surface, visible from both sides)
         const planeGeo = new BoxGeometry(width, height, 0.003);
         const planeMat = new MeshBasicMaterial({ color: 0xe2e8f0, side: DoubleSide });
@@ -434,12 +434,12 @@ export class ViewerEngine implements Contract {
           const P1 = new Vector3(corners[1][0], corners[1][1], 0.001);
           const P2 = new Vector3(corners[2][0], corners[2][1], 0.001);
           const P3 = new Vector3(corners[3][0], corners[3][1], 0.001);
-          
+
           // Marker filled dark square
           const shapeGeom = new BufferGeometry();
           const verts = new Float32Array([
-            P0.x, P0.y, P0.z,  P1.x, P1.y, P1.z,  P2.x, P2.y, P2.z,
-            P0.x, P0.y, P0.z,  P2.x, P2.y, P2.z,  P3.x, P3.y, P3.z,
+            P0.x, P0.y, P0.z, P1.x, P1.y, P1.z, P2.x, P2.y, P2.z,
+            P0.x, P0.y, P0.z, P2.x, P2.y, P2.z, P3.x, P3.y, P3.z,
           ]);
           shapeGeom.setAttribute("position", new BufferAttribute(verts, 3));
           const markerMesh = new Mesh(shapeGeom, new MeshBasicMaterial({ color: 0x1e293b, side: DoubleSide }));
@@ -456,7 +456,7 @@ export class ViewerEngine implements Contract {
 
           markerIndex++;
         }
-        
+
         if (value.t_w_b?.length === 16) boardGroup.applyMatrix4(tvw.clone().multiply(new Matrix4().fromArray(value.t_w_b).transpose()));
         else boardGroup.applyMatrix4(tvw);
         this.registration.add(boardGroup);
@@ -467,7 +467,7 @@ export class ViewerEngine implements Contract {
       else board.applyMatrix4(tvw);
       this.registration.add(board);
     }
-    
+
     value.observations?.forEach((point) => { const marker = this.sphere(.004, 0x58d6ff); marker.position.copy(this.worldToViewer(point)); this.registration.add(marker); });
     value.residualPoints?.forEach((item) => this.registration.add(new Line(new BufferGeometry().setFromPoints([this.worldToViewer(item.from), this.worldToViewer(item.to)]), new LineBasicMaterial({ color: item.errorMm > 3 ? 0xff7479 : item.errorMm > 1.5 ? 0xf2bd55 : 0x61e2b1 }))));
     this.visibility();
@@ -491,12 +491,12 @@ export class ViewerEngine implements Contract {
     if (this.probeGroup) disposeGroup(this.probeGroup);
     if (!this.probeGeometry) return;
     this.probeGroup = new Group();
-    
+
     const pts = this.probeGeometry.map(p => new Vector3(p[0], p[1], p[2]));
     const group = this.probeGroup;
     const geom = new BufferGeometry().setFromPoints(pts);
     group.add(new Line(geom, new LineBasicMaterial({ color: 0xffea00, linewidth: 2 })));
-    
+
     pts.forEach(p => {
       const s = this.sphere(.004, 0x61e2b1);
       s.position.copy(p);
@@ -508,17 +508,17 @@ export class ViewerEngine implements Contract {
     if (!this.initialized || this.disposed) return;
     const t_w_c = (value as any).t_w_c as number[] | undefined;
     const t_c_m = (value as any).t_c_m as number[] | undefined;
-    
+
     if (this.probeGroup && value.probe_state === "tracked" && t_w_c && t_c_m) {
       if (this.probeGroup.parent !== this.tracking) this.tracking.add(this.probeGroup);
       this.probeGroup.visible = true;
-      
+
       const matC = new Matrix4().fromArray(t_w_c).transpose();
       const matM = new Matrix4().fromArray(t_c_m).transpose();
       const matW = matC.multiply(matM);
       const viewerMat = this.getViewerTransform().multiply(matW);
       viewerMat.decompose(this.probeGroup.position, this.probeGroup.quaternion, this.probeGroup.scale);
-      
+
       const tip = this.tracking.getObjectByName("tip") as Mesh | undefined;
       if (tip) tip.visible = false;
     } else {
@@ -555,7 +555,7 @@ export class ViewerEngine implements Contract {
       }
       this.camerasGroup.add(camMesh);
     }
-    
+
     const isTracked = value.camera_state === "tracked" || Boolean(t_w_c);
     if (t_w_c && t_w_c.length === 16 && isTracked) {
       camMesh.visible = true;
