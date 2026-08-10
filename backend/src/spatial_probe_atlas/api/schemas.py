@@ -111,6 +111,13 @@ class PaintedPointCreate(BaseModel):
     quality: str | None = None
     note: str = Field(default="", max_length=1000)
     low_quality_override_reason: str | None = Field(default=None, max_length=500)
+    save_image: bool = False
+    image_uri: str | None = None
+
+
+class RecordAnnotationCreate(BaseModel):
+    points_px: list[list[float]] = Field(..., min_length=5, max_length=5)
+
 
 
 class PaintedPathCreate(BaseModel):

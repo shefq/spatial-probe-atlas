@@ -174,9 +174,13 @@ class CpuTrackingPipeline:
         camera_state, t_w_c, camera_temporal = self.camera_state.update(raw_w_c if camera_acceptable else None)
         probe_state, t_c_m, probe_temporal = self.probe_state.update(raw_c_m if probe_acceptable else None)
         latency_ms = (time.monotonic_ns() - started) / 1e6
-        tracked = camera_state == probe_state == "tracked" and t_w_c is not None and t_c_m is not None and latency_ms <= MAX_TRACKING_LATENCY_MS
-        t_w_p = compose_tip(t_w_c.reshape(-1).tolist(), t_c_m.reshape(-1).tolist(), self.calibration["probe"]["t_marker_tip"]) if tracked else None
+        poses_valid = camera_state == probe_state == "tracked" and t_w_c is not None and t_c_m is not None
+        latency_ok = latency_ms <= MAX_TRACKING_LATENCY_MS
+        # Compute tip whenever both poses exist — don't suppress the tip on latency alone
+        t_w_p = compose_tip(t_w_c.reshape(-1).tolist(), t_c_m.reshape(-1).tolist(), self.calibration["probe"]["t_marker_tip"]) if poses_valid else None
         tip = np.asarray(t_w_p).reshape(4, 4)[:3, 3].tolist() if t_w_p else None
+        # quality == "good" only when poses are valid AND latency is within threshold
+        tracked = poses_valid and latency_ok
         return {
             "session_id": session_id, "frame_id": frame.sequence, "device_timestamp_ns": frame.device_timestamp_ns,
             "camera_state": "tracked" if camera_state == "tracked" else "lost", "probe_state": "tracked" if probe_state == "tracked" else "lost",
@@ -184,6 +188,6 @@ class CpuTrackingPipeline:
             "t_w_p": t_w_p, "tip_w_m": tip, "camera_inliers": camera_inliers, "camera_reprojection_error_px": camera_error if math.isfinite(camera_error) else None,
             "probe_inliers": probe_inliers, "probe_reprojection_error_px": probe_error if math.isfinite(probe_error) else None,
             "blob_count": blob_count, "fps": 0.0, "latency_ms": latency_ms, "quality": "good" if tracked else "lost",
-            "rejection_reasons": [item for item in (camera_reason, camera_temporal, probe_reason, probe_temporal, "latency" if latency_ms > MAX_TRACKING_LATENCY_MS else None) if item],
+            "rejection_reasons": [item for item in (camera_reason, camera_temporal, probe_reason, probe_temporal, "latency" if not latency_ok else None) if item],
             "coordinate_frame": "W", "units": "m", "simulated": False,
         }

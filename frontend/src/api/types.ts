@@ -397,11 +397,12 @@ export interface PaintedPoint {
   type: "point";
   session_id: UUID;
   timestamp: IsoTimestamp;
-  position_w_m: [number, number, number];
+  position_w_m?: [number, number, number];
   quality: string;
   note?: string;
   deleted?: boolean;
   metrics?: Record<string, number>;
+  image_uri?: string;
 }
 
 export interface PaintedPath {

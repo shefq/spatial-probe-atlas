@@ -159,7 +159,7 @@ async def camera_preview(websocket: WebSocket) -> None:
                 rgb = rgb.copy()
                 try:
                     import cv2
-                    from spatial_probe_atlas.pipelines.blobs import detect_blobs, DEFAULT_BLOB_DETECTOR
+                    from spatial_probe_atlas.pipelines.probe import detect_blobs, DEFAULT_BLOB_DETECTOR
                     from spatial_probe_atlas.pipelines.aruco import detect_aruco
                     
                     # Detect and draw blobs
@@ -451,7 +451,16 @@ async def session_tracking(websocket: WebSocket, project_id: str, session_id: st
                 command_id = str(message.get("command_id") or data.get("command_id") or "")
                 if command == "paint.point":
                     try:
-                        record = commit_point(container, project_id, session_id, {"command_id": command_id, "frame_id": data.get("frame_id"), "note": "", "low_quality_override_reason": data.get("reason") if data.get("allow_low_quality") else None})
+                        save_image = bool(data.get("save_image", False))
+                        image_bytes = None
+                        if save_image and container.camera.state == "ready":
+                            latest = container.camera.latest_frame
+                            if latest is not None:
+                                rgb = np.frombuffer(latest.rgb, dtype=np.uint8).reshape(latest.height, latest.width, 3)
+                                payload_bytes, _ = _encode_frame(rgb, is_rgb=True, quality=90)
+                                image_bytes = payload_bytes
+                                
+                        record = commit_point(container, project_id, session_id, {"command_id": command_id, "frame_id": data.get("frame_id"), "note": "", "low_quality_override_reason": data.get("reason") if data.get("allow_low_quality") else None, "save_image": save_image}, image_bytes=image_bytes)
                         snapshot = _session_counts(container, project_id, session_id)
                         await websocket.send_json(_envelope("paint.point_committed", sequence, {"command_id": command_id, "record": record, **snapshot}, command_id))
                     except AppError as exc:

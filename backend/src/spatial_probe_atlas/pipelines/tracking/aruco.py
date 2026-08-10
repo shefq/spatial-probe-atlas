@@ -58,3 +58,8 @@ class ArucoTrackingPipeline(CpuTrackingPipeline):
 
     localize_camera = _localize
 
+    def track(self, session_id: str, frame: NormalizedCameraFrame) -> dict[str, Any]:
+        result = super().track(session_id, frame)
+        result["is_aruco_mode"] = True
+        return result
+

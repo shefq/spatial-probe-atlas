@@ -164,6 +164,7 @@ export const api = {
     updateRecord: (projectId: string, sessionId: string, record: PaintedRecord, note: string) => request<PaintedRecord>(`/projects/${projectId}/sessions/${sessionId}/painted-${record.type}s/${record.id}`, { method: "PATCH", body: JSON.stringify({ note }) }),
     deleteRecord: (projectId: string, sessionId: string, record: PaintedRecord) => request<void>(`/projects/${projectId}/sessions/${sessionId}/painted-${record.type}s/${record.id}`, { method: "DELETE" }),
     restoreRecord: (projectId: string, sessionId: string, record: PaintedRecord) => request<PaintedRecord>(`/projects/${projectId}/sessions/${sessionId}/painted-${record.type}s/${record.id}/restore`, { method: "POST" }),
+    annotate: (projectId: string, sessionId: string, recordId: string, points_px: [number, number][]) => request<PaintedRecord>(`/projects/${projectId}/sessions/${sessionId}/painted-records/${recordId}/annotate`, { method: "POST", body: JSON.stringify({ points_px }) }),
     replay: (projectId: string, id: string, from: number, to: number) => request<{ records: PaintedRecord[] }>(`/projects/${projectId}/sessions/${id}/replay${queryString({ from, to })}`),
   },
   exports: {
