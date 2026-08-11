@@ -400,6 +400,9 @@ export interface PaintedPoint {
   position_w_m?: [number, number, number];
   quality: string;
   note?: string;
+  label?: string;
+  value?: number;
+  color?: string;
   deleted?: boolean;
   metrics?: Record<string, number>;
   image_uri?: string;

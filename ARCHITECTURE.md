@@ -349,9 +349,9 @@ Record3D always displays **Intrinsics supplied per frame** and never a calibrati
 
 - **Purpose:** Run a monitored session and persist probe-tip points/paths.
 - **Layout:** Dominant `SpatialViewer(mode="live")`; compact image overlay; session controls/duration; localization, probe, position, paint mode, sampling, and counts panel; recent-event table.
-- **Primary actions:** Start, pause/resume, save point, start/stop path, choose time/distance sampling, annotate a captured image manually when a point needs a position, focus probe, note, stop/finalize.
+- **Primary actions:** Start, pause/resume, save point (including via external API with custom labels/colors), start/stop path, choose time/distance sampling, annotate a captured image manually when a point needs a position, focus probe, note, stop/finalize.
 - **States:** Preflight checklist before Start; unmet-prerequisite empty state; tracking loss auto-pauses painting; camera loss enters degraded/reconnecting; fatal failure preserves committed records and a recoverable session.
-- **Validation:** Automatic samples require localized camera, tracked probe, finite transforms, monotonic timestamp, map bounds, and quality thresholds. Paths deduplicate jitter. A captured image without a resolved position is retained as `needs_annotation`; the operator selects exactly five marker centres, the backend tries their correspondences with calibrated geometry, solves/refines PnP, records reprojection error, and persists the resolved world-space tip.
+- **Validation:** Automatic samples require localized camera, tracked probe, finite transforms, monotonic timestamp, map bounds, and quality thresholds. Points triggered when the probe is not tracked exactly at the click time can fall back to searching a short temporal window of recent frames (e.g., ±0.5s), optionally averaging the positions. Paths deduplicate jitter. A captured image without a resolved position is retained as `needs_annotation`; the operator selects exactly five marker centres, the backend tries their correspondences with calibrated geometry, solves/refines PnP, records reprojection error, and persists the resolved world-space tip.
 - **Data:** Camera/probe/tip overlays, frame/point/path counts, duration/size, FPS/drops, inliers/errors, latency, coordinates, disk/RAM/VRAM warnings.
 - **API:** Session lifecycle/snapshot, tracking WebSocket, paint commands/acks, recent records.
 - **Entry/exit:** Camera, map, calibration, registration, storage, and camera-owner preflight pass → finalized or recoverable stopped session.
@@ -442,7 +442,7 @@ The requested and effective profiles, algorithm name, dependency versions, captu
 
 `TrackingPipelineFactory` selects a localization path from the active map artifacts: checksum-verified SIFT/PnP for CPU maps, ALIKED/LightGlue with the saved pycolmap reconstruction for CUDA maps, or deterministic replay tracking. The runtime cache key includes the session, active calibration revision, registration revision, and localization artifact hash.
 
-For each frame, the probe path applies grayscale conversion, active `SimpleBlobDetector` settings, candidate/correspondence search, `solvePnPRansac`, refinement, finite/visibility/inlier/error/jump checks, and bounded temporal filtering. Standard map mode composes `T_W_P = T_W_C · T_C_M · T_M_P`. ArUco Board Mode also detects the configured board and composes through `T_C_B` and the solved board/probe relationship. Exact frame intrinsics are used. Live tuning modifies only an ephemeral draft until a calibration revision is saved.
+For each frame, the probe path applies shared grayscale conversion, active `SimpleBlobDetector` settings (utilizing cached detector instances), candidate/correspondence search accelerated by temporal pose prediction, `solvePnPRansac`, refinement, finite/visibility/inlier/error/jump checks, and bounded temporal filtering. Standard map mode composes `T_W_P = T_W_C · T_C_M · T_M_P`. ArUco Board Mode also detects the configured board and composes through `T_C_B` and the solved board/probe relationship. Exact frame intrinsics are used. Live tuning modifies only an ephemeral draft until a calibration revision is saved.
 
 Tracking frames include camera, board, marker, probe-tip, inlier/error, frame-rate, and latency fields needed by `ViewerEngineV1`. Stale high-rate frames are dropped rather than queued. Simulated/replay diagnostic values must remain identifiable as simulated and must not be treated as hardware validation evidence.
 
@@ -491,7 +491,7 @@ Files are written under same-volume `.staging/<job-id>`, flushed, checksummed, v
 | Probe | `GET /projects/{p}/probe-calibrations`; `GET .../{id}` and `/download`; `POST .../validate`, `/import`, collection create, `/{id}/activate`, `/{id}/revisions`; probe capture endpoints |
 | Registration | `GET/POST /projects/{p}/registrations`; observation add/delete/clear; `POST .../{id}/solve`, `/validate`, `/activate`; ArUco capture/solve and registration-tracking stream |
 | Sessions | `GET/POST /projects/{p}/sessions`; `GET .../{s}`; `POST .../{s}/start`, `/pause`, `/resume`, `/stop`, `/finalize`; tracking snapshot |
-| Paint/review | Paged `painted-records`, `painted-points`, and `painted-paths`; item `PATCH/DELETE`; restore; record image; manual `annotate`; replay chunks |
+| Paint/review | Paged `painted-records`, `painted-points` (also serves as external API trigger), and `painted-paths`; item `PATCH/DELETE`; restore; record image; manual `annotate`; replay chunks |
 | Export/jobs | `POST/GET /projects/{p}/sessions/{s}/exports`; download; `GET /jobs/{j}`; `POST /jobs/{j}/cancel`, `/resume` |
 | Operations | Support bundle, integrity repair/reindex, data-root migration, log tail/reveal, and legacy import/report endpoints |
 
@@ -632,7 +632,7 @@ All entities have UUID IDs, UTC timestamps, and revisions. Cached sizes/counts i
 | ProbeCalibration | Geometry, `T_M_P`, full blob settings, quality/provenance/checksum | draft, validating, valid, active, rejected, superseded |
 | Registration | Map/calibration refs, observations, `S_W_M0`, `T_W_B`, scale/residuals | draft, solving, solved, validated, active, rejected, superseded |
 | TrackingFrame | Times, `T_W_C`, `T_C_M`, tip, metrics, latency | Ephemeral; optionally sampled |
-| PaintedPoint | Session/frame/time, optional captured image, `position_w_m`, orientation, metrics, quality, note | committed, needs_annotation, flagged_low_quality, deleted |
+| PaintedPoint | Session/frame/time, optional captured image, `position_w_m`, orientation, metrics, quality, note, label, value, color | committed, needs_annotation, flagged_low_quality, deleted |
 | PaintedPath | Sampling policy, ordered chunks, bounds, length, quality, note | recording, committed, interrupted, deleted |
 | ExportJob | Format/filter snapshot, output/checksum/size, job ref | queued, processing, completed, failed, cancelled, expired |
 | Job | Type/owner/spec/stage/progress/checkpoint/PID/attempt/error/times | Section 15 |

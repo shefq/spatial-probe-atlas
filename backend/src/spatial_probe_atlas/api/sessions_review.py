@@ -281,8 +281,9 @@ def commit_point(
     window_s: float = 0.0,
     use_window_average: bool = False,
 ) -> dict[str, Any]:
+    import uuid
     data = body.model_dump() if isinstance(body, PaintedPointCreate) else body
-    command_id = str(data.get("command_id") or data.get("commandId") or "")
+    command_id = str(data.get("command_id") or data.get("commandId") or uuid.uuid4())
     cached = container.catalog.idempotent_response(f"paint.point:{session_id}", command_id)
     if cached:
         return cached
@@ -376,6 +377,7 @@ def commit_point(
         "timestamp": timestamp, "position_w_m": list(map(float, position)) if len(position) == 3 and np.isfinite(position).all() else [], 
         "orientation_w_xyzw": [0, 0, 0, 1],
         "quality": quality_state, "note": data.get("note", ""),
+        "label": data.get("label"), "value": data.get("value"), "color": data.get("color"),
         "override_reason": override or None, "metrics": {
             "camera_inliers": frame.get("camera_inliers"), "camera_reprojection_error_px": frame.get("camera_reprojection_error_px"),
             "probe_inliers": frame.get("probe_inliers"), "probe_reprojection_error_px": frame.get("probe_reprojection_error_px"),

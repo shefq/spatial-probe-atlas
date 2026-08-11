@@ -105,11 +105,14 @@ class SessionNote(BaseModel):
 
 
 class PaintedPointCreate(BaseModel):
-    command_id: str
+    command_id: str | None = None
     frame_id: int | None = None
     position_w_m: list[float] | None = Field(default=None, min_length=3, max_length=3)
     quality: str | None = None
     note: str = Field(default="", max_length=1000)
+    label: str | None = Field(default=None, max_length=120)
+    value: float | None = None
+    color: str | None = Field(default=None, max_length=20)
     low_quality_override_reason: str | None = Field(default=None, max_length=500)
     save_image: bool = False
     image_uri: str | None = None

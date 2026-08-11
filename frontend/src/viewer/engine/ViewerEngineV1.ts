@@ -34,6 +34,28 @@ function makeTextSprite(text: string, colorHex: string): Sprite {
   return sprite;
 }
 
+function makeLabelSprite(label: string, value: number | undefined, colorHex: string): Sprite {
+  const text = value !== undefined ? `${label}: ${value}` : label;
+  const canvas = document.createElement("canvas");
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return new Sprite();
+  ctx.font = "Bold 32px sans-serif";
+  const textWidth = ctx.measureText(text).width;
+  canvas.width = Math.max(128, textWidth + 32);
+  canvas.height = 64;
+  ctx.font = "Bold 32px sans-serif";
+  ctx.fillStyle = colorHex;
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillText(text, canvas.width / 2, 32);
+  const texture = new CanvasTexture(canvas);
+  texture.needsUpdate = true;
+  const material = new SpriteMaterial({ map: texture, depthTest: false });
+  const sprite = new Sprite(material);
+  sprite.scale.set(canvas.width / 3000, canvas.height / 3000, 1);
+  return sprite;
+}
+
 export function createLabeledAxes(size = 0.15): Group {
   const axesGroup = new Group();
   axesGroup.name = "labeled_axes";
@@ -597,7 +619,26 @@ export class ViewerEngine implements Contract {
   private onLost = (event: Event) => { event.preventDefault(); this.contextLost = true; };
   private onRestored = () => { this.contextLost = false; this.renderer?.info.reset(); };
   private visibility() { this.map.visible = this.filters.showMap !== false; this.camerasGroup.visible = this.filters.showFrames !== false; this.helpers.visible = this.filters.showFrames !== false; this.registration.visible = this.filters.showBoard !== false; this.tracking.visible = (this.mode === "live" || this.mode === "registration") && this.filters.showProbe !== false; this.paint.visible = this.mode === "live" || this.mode === "review"; this.paintObjects.forEach((object) => { const data = object.userData; object.visible = (data.recordType !== "point" || this.filters.showPoints !== false) && (data.recordType !== "path" || this.filters.showPaths !== false) && (!data.deleted || this.filters.includeDeleted === true) && (!this.filters.quality || this.filters.quality === "all" || data.quality === this.filters.quality); }); }
-  private upsertPaint(record: PaintedPoint | PaintedPath) { this.removePaint(record.id); if (record.type === "point" && !record.position_w_m) return; let object: Mesh | Line; if (record.type === "point") { object = this.sphere(.0045, record.deleted ? 0x667487 : record.quality === "good" ? 0x61e2b1 : record.quality === "warning" ? 0xf2bd55 : 0xff7479, record.deleted ? .35 : .95); object.position.copy(this.worldToViewer(record.position_w_m!)); } else object = new Line(new BufferGeometry().setFromPoints(record.positions_w_m.map(p => this.worldToViewer(p))), new LineBasicMaterial({ color: record.deleted ? 0x667487 : 0x58d6ff, transparent: true, opacity: record.deleted ? .3 : .9 })); object.userData = { recordType: record.type, quality: record.quality, deleted: record.deleted }; this.paint.add(object); this.paintObjects.set(record.id, object); }
+  private upsertPaint(record: PaintedPoint | PaintedPath) {
+    this.removePaint(record.id);
+    if (record.type === "point" && !record.position_w_m) return;
+    let object: Mesh | Line;
+    if (record.type === "point") {
+      const color = record.color ? parseInt(record.color.replace("#", "0x")) : (record.deleted ? 0x667487 : record.quality === "good" ? 0x61e2b1 : record.quality === "warning" ? 0xf2bd55 : 0xff7479);
+      object = this.sphere(.0045, color, record.deleted ? .35 : .95);
+      object.position.copy(this.worldToViewer(record.position_w_m!));
+      if (record.label || record.value !== undefined) {
+        const sprite = makeLabelSprite(record.label || "Point", record.value, record.color || "#ffffff");
+        sprite.position.set(0, 0.015, 0);
+        object.add(sprite);
+      }
+    } else {
+      object = new Line(new BufferGeometry().setFromPoints(record.positions_w_m.map(p => this.worldToViewer(p))), new LineBasicMaterial({ color: record.deleted ? 0x667487 : 0x58d6ff, transparent: true, opacity: record.deleted ? .3 : .9 }));
+    }
+    object.userData = { recordType: record.type, quality: record.quality, deleted: record.deleted };
+    this.paint.add(object);
+    this.paintObjects.set(record.id, object);
+  }
   private removePaint(id: string) { const object = this.paintObjects.get(id); if (!object) return; object.removeFromParent(); object.geometry.dispose(); const material = object.material; if (Array.isArray(material)) material.forEach((item) => item.dispose()); else material.dispose(); this.paintObjects.delete(id); }
   private sphere(radius: number, color: number, opacity = 1): Mesh { return new Mesh(new SphereGeometry(radius, 12, 8), new MeshBasicMaterial({ color, transparent: opacity < 1, opacity })); }
   private recenterTransformPivot(point: Vector3): void {
