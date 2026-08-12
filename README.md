@@ -109,4 +109,29 @@ Record3D integration tests and CUDA checks are explicitly separated from determi
 * [Architecture Decision Records (ADRs)](docs/adr)
 
 ---
+
+## 🙏 Acknowledgements & External Tools
+
+This project integrates and builds upon several exceptional open-source tools and libraries:
+* **[Record3D](https://record3d.app/)**: Used for acquiring high-quality RGB-D data and device tracking from iOS devices.
+* **[OpenCV](https://opencv.org/) & [ArUco](https://docs.opencv.org/4.x/d9/d6a/group__aruco.html)**: Core libraries for computer vision, camera pose estimation, and marker tracking.
+* **[Three.js](https://threejs.org/)**: Powers the high-performance 3D Spatial Viewer.
+* **[ALIKED](https://github.com/Shiaoming/ALIKED) & [LightGlue](https://github.com/cvg/LightGlue)**: Utilized in the CUDA mapping profile for state-of-the-art feature extraction and matching.
+* **[COLMAP / pycolmap](https://colmap.github.io/)**: Provides robust Structure-from-Motion (SfM) for 3D reconstruction.
+
+---
+
+## ⚖️ License & Disclaimer
+
+**License:**  
+This project is licensed under the MIT License - see the `LICENSE` file for details.
+
+**Disclaimer:**  
+> [!WARNING]
+> **For Research Purposes Only.**  
+> Spatial Probe Atlas is an experimental platform designed strictly for research, academic, and engineering workflows. **It has not been clinically verified, validated, or approved by any regulatory body (such as the FDA, EMA, or similar) for medical, diagnostic, or surgical use.** 
+> 
+> The authors and contributors assume **no responsibility or liability** for any errors, inaccuracies, or outcomes resulting from the use of this software. Any deployment in sensitive or life-critical environments is done entirely at your own risk.
+
+---
 *Developed for advanced AR optical tracking and research workflows.*
