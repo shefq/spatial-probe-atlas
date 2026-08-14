@@ -6,6 +6,7 @@ import { SpatialViewer } from "../viewer/react/SpatialViewer";
 import { Button, Card, EmptyState, Field, InlineAlert, Metric, Modal, Segmented, Skeleton, StatusBadge, TextInput, Toggle } from "../components/ui";
 import { useReviewStore, useUiStore } from "../stores";
 import { formatBytes, formatCoordinate, formatCount, formatDate, formatDuration } from "../utils/format";
+import { ManualAnnotationModal } from "../components/ManualAnnotationModal";
 
 const exportFormats: Array<{ value: ExportSnapshot["format"]; label: string; detail: string }> = [
   { value: "json", label: "JSON data", detail: "Points, paths, frames, units, quality and filter snapshot." },
@@ -43,6 +44,7 @@ export function SessionReviewPage() {
   const [exportFormat, setExportFormat] = useState<ExportSnapshot["format"]>("json");
   const [noteDraft, setNoteDraft] = useState("");
   const [compareIds, setCompareIds] = useState<string[]>([]);
+  const [annotateRecord, setAnnotateRecord] = useState<PaintedRecord | null>(null);
 
   useEffect(() => {
     resetReview();
@@ -154,7 +156,7 @@ export function SessionReviewPage() {
             <Button onClick={() => setFilters({ type: "all", quality: "all", include_deleted: false, from: undefined, to: undefined })}>Reset filters</Button>
           </Card>
           <Card title="Selected record" eyebrow={selected?.type.toUpperCase() ?? "NONE"}>
-            {selected ? <><SelectedSummary record={selected} units={units} /><Field label="Annotation" error={noteDraft.length > 1000 ? "Use 1,000 characters or fewer." : undefined}><textarea className="textarea" value={noteDraft} maxLength={1001} disabled={readOnly} onChange={(event) => setNoteDraft(event.target.value)} /></Field><div className="button-row"><Button variant="primary" busy={busy} disabled={readOnly || noteDraft === (selected.note ?? "") || noteDraft.length > 1000} onClick={() => void saveAnnotation()}>Save note</Button><Button variant={selected.deleted ? "default" : "danger"} busy={busy} disabled={readOnly} onClick={() => void toggleDelete()}>{selected.deleted ? "Restore" : "Soft delete"}</Button><Button onClick={() => compareToggle(selected.id)}>{compareIds.includes(selected.id) ? "Remove compare" : "Compare"}</Button></div></> : <p className="muted">Choose a point or path from the viewer or table.</p>}
+            {selected ? <><SelectedSummary record={selected} units={units} onAnnotate={setAnnotateRecord} /><Field label="Annotation" error={noteDraft.length > 1000 ? "Use 1,000 characters or fewer." : undefined}><textarea className="textarea" value={noteDraft} maxLength={1001} disabled={readOnly} onChange={(event) => setNoteDraft(event.target.value)} /></Field><div className="button-row"><Button variant="primary" busy={busy} disabled={readOnly || noteDraft === (selected.note ?? "") || noteDraft.length > 1000} onClick={() => void saveAnnotation()}>Save note</Button><Button variant={selected.deleted ? "default" : "danger"} busy={busy} disabled={readOnly} onClick={() => void toggleDelete()}>{selected.deleted ? "Restore" : "Soft delete"}</Button><Button onClick={() => compareToggle(selected.id)}>{compareIds.includes(selected.id) ? "Remove compare" : "Compare"}</Button></div></> : <p className="muted">Choose a point or path from the viewer or table.</p>}
           </Card>
           {compareIds.length === 2 ? <CompareCard records={records.filter((record) => compareIds.includes(record.id))} units={units} /> : null}
         </aside>
@@ -173,22 +175,24 @@ export function SessionReviewPage() {
         <div className="export-format-list" role="radiogroup" aria-label="Export format">{exportFormats.map((format) => <label className={exportFormat === format.value ? "is-selected" : ""} key={format.value}><input type="radio" name="export-format" checked={exportFormat === format.value} onChange={() => setExportFormat(format.value)} /><span><strong>{format.label}</strong><small>{format.detail}</small></span></label>)}</div>
         <InlineAlert tone="info" title="Current filter snapshot">{filters.type} · {filters.quality} quality · {filters.include_deleted ? "including" : "excluding"} deleted records. Coordinates remain in frame W and metres.</InlineAlert>
       </Modal>
+      <ManualAnnotationModal open={!!annotateRecord} projectId={projectId} sessionId={sessionId} record={annotateRecord} onClose={() => setAnnotateRecord(null)} onSuccess={(updated) => { setAnnotateRecord(null); replaceRecord(updated); if (selectedId === updated.id) setSelectedId(updated.id); }} />
     </div>
   );
 }
 
 function recordTime(record: PaintedRecord): number { return new Date(record.type === "point" ? record.timestamp : record.started_at).valueOf(); }
 
-function SelectedSummary({ record, units }: { record: PaintedRecord; units: "mm" | "m" }) {
-  return <div className="selected-summary"><div><small>ID</small><code>{record.id.slice(0, 12)}…</code></div><div><small>Timestamp</small><strong>{formatDate(record.type === "point" ? record.timestamp : record.started_at)}</strong></div><div><small>Quality</small><StatusBadge state={record.quality} /></div>{record.type === "point" ? <div><small>Position W</small><strong>{record.position_w_m.map((value) => formatCoordinate(value, units)).join(" · ")}</strong></div> : <><div><small>Samples</small><strong>{formatCount(record.sample_count)}</strong></div><div><small>Length</small><strong>{formatCoordinate(record.length_m, units)}</strong></div></>}</div>;
+function SelectedSummary({ record, units, onAnnotate }: { record: PaintedRecord; units: "mm" | "m"; onAnnotate: (record: PaintedRecord) => void }) {
+  return <div className="selected-summary"><div><small>ID</small><code>{record.id.slice(0, 12)}…</code></div><div><small>Timestamp</small><strong>{formatDate(record.type === "point" ? record.timestamp : record.started_at)}</strong></div><div><small>Quality</small><StatusBadge state={record.quality} /></div>{record.type === "point" ? <div><small>Position W</small><strong>{record.position_w_m ? record.position_w_m.map((value) => formatCoordinate(value, units)).join(" · ") : <div style={{ display: "flex", gap: "8px", alignItems: "center" }}><span style={{ color: "#f2bd55" }}>Needs Annotation</span><Button size="sm" onClick={() => onAnnotate(record)}>Annotate</Button></div>}</strong></div> : <><div><small>Samples</small><strong>{formatCount(record.sample_count)}</strong></div><div><small>Length</small><strong>{formatCoordinate(record.length_m, units)}</strong></div></>}</div>;
 }
 
 function CompareCard({ records, units }: { records: PaintedRecord[]; units: "mm" | "m" }) {
-  const distance = records.length === 2 && records.every((record) => record.type === "point") ? Math.sqrt((records[0].position_w_m[0] - records[1].position_w_m[0]) ** 2 + (records[0].position_w_m[1] - records[1].position_w_m[1]) ** 2 + (records[0].position_w_m[2] - records[1].position_w_m[2]) ** 2) : undefined;
+  const r1 = records[0]; const r2 = records[1];
+  const distance = records.length === 2 && r1.type === "point" && r2.type === "point" && r1.position_w_m && r2.position_w_m ? Math.sqrt((r1.position_w_m[0] - r2.position_w_m[0]) ** 2 + (r1.position_w_m[1] - r2.position_w_m[1]) ** 2 + (r1.position_w_m[2] - r2.position_w_m[2]) ** 2) : undefined;
   return <Card title="Comparison" eyebrow="2 RECORDS"><Metric label="Time delta" value={records.length === 2 ? formatDuration(Math.abs(recordTime(records[1]) - recordTime(records[0])) / 1000) : "—"} /><Metric label="Point distance" value={formatCoordinate(distance, units)} /></Card>;
 }
 
 function RecordTable({ records, selectedId, units, compareIds, onSelect, onCompare }: { records: PaintedRecord[]; selectedId: string | null; units: "mm" | "m"; compareIds: string[]; onSelect: (id: string) => void; onCompare: (id: string) => void }) {
   if (!records.length) return <EmptyState icon="·" title="No records match these filters">A valid empty session is still exportable. Adjust filters or resume acquisition if the session is recoverable.</EmptyState>;
-  return <div className="data-table data-table--review"><div className="data-table__head"><span>Time</span><span>Type</span><span>Position / samples</span><span>Quality</span><span>Note</span><span>Compare</span></div>{records.map((record) => <button className={`data-table__row ${selectedId === record.id ? "is-selected" : ""} ${record.deleted ? "is-deleted" : ""}`} key={record.id} onClick={() => onSelect(record.id)}><span>{formatDate(record.type === "point" ? record.timestamp : record.started_at)}</span><span>{record.type}</span><span>{record.type === "point" ? record.position_w_m.map((value) => formatCoordinate(value, units)).join(" · ") : `${formatCount(record.sample_count)} samples`}</span><span><StatusBadge state={record.quality} /></span><span>{record.note ?? "—"}</span><span><input type="checkbox" checked={compareIds.includes(record.id)} onClick={(event) => event.stopPropagation()} onChange={() => onCompare(record.id)} aria-label={`Compare ${record.id}`} /></span></button>)}</div>;
+  return <div className="data-table data-table--review"><div className="data-table__head"><span>Time</span><span>Type</span><span>Position / samples</span><span>Quality</span><span>Note</span><span>Compare</span></div>{records.map((record) => <button className={`data-table__row ${selectedId === record.id ? "is-selected" : ""} ${record.deleted ? "is-deleted" : ""}`} key={record.id} onClick={() => onSelect(record.id)}><span>{formatDate(record.type === "point" ? record.timestamp : record.started_at)}</span><span>{record.type}</span><span>{record.type === "point" ? (record.position_w_m ? record.position_w_m.map((value) => formatCoordinate(value, units)).join(" · ") : "Needs Annotation") : `${formatCount(record.sample_count)} samples`}</span><span><StatusBadge state={record.quality} /></span><span>{record.note ?? "—"}</span><span><input type="checkbox" checked={compareIds.includes(record.id)} onClick={(event) => event.stopPropagation()} onChange={() => onCompare(record.id)} aria-label={`Compare ${record.id}`} /></span></button>)}</div>;
 }

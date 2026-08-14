@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import collections
 import logging
 import os
 import secrets
@@ -92,6 +93,10 @@ class Container:
         self.tracking_snapshots: dict[str, dict[str, Any]] = {}
         self.tracking_sequences: dict[str, int] = {}
         self.active_paths: dict[str, dict[str, Any]] = {}
+        # Rolling buffer of recently tracked probe tip positions per session.
+        # Only frames where probe_state == "tracked" are stored.
+        # Each entry: {"t": monotonic_ns, "session_id": str, "tip_w_m": [x,y,z]}
+        self.probe_tip_buffer: collections.deque = collections.deque(maxlen=2000)
         self.lock = InstanceLock(settings.data_root / "instance.lock")
         set_runtime_container(self)
 

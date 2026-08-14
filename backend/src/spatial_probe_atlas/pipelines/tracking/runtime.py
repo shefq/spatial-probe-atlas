@@ -32,14 +32,23 @@ def real_tracking_frame(session_id: str) -> dict[str, Any] | None:
             return None
         project_id = session.project_id
         session_payload = dict(session.payload or {})
+    registration = container.catalog.get_resource(project_id, "registration", session_payload["registration_id"])
+    is_aruco = registration.get("is_aruco_mode", False)
+    
+    if is_aruco:
+        scene_map = None
+        index_hash = "aruco"
+    else:
+        scene_map = container.catalog.get_resource(project_id, "scene_map", session_payload["map_id"])
+        index = scene_map.get("localization_index")
+        index_hash = (index or {}).get("sha256")
+        
     calibration = container.catalog.get_resource(project_id, "probe_calibration", session_payload["probe_calibration_id"])
-    scene_map = container.catalog.get_resource(project_id, "scene_map", session_payload["map_id"])
-    index = scene_map.get("localization_index")
-    similarity = scene_map.get("similarity_s_w_m0")
-    key = (session_id, calibration["revision"], scene_map["revision"], (index or {}).get("sha256"))
+    key = (session_id, calibration["revision"], registration["revision"], index_hash)
     pipeline = container.cpu_tracking_pipelines.get(key)
     if pipeline is None:
-        pipeline = IndexedCpuTrackingPipeline(index or {}, similarity or {}, calibration, container.artifacts.root)
+        from spatial_probe_atlas.pipelines.tracking.factory import create_tracking_pipeline
+        pipeline = create_tracking_pipeline(scene_map, {}, calibration, container.artifacts.root, registration=registration)
         container.cpu_tracking_pipelines.clear()
         container.cpu_tracking_pipelines[key] = pipeline
     return pipeline.track(session_id, frame)

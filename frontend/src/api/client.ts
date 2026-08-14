@@ -124,6 +124,7 @@ export const api = {
       return { accepted: value.items.filter((item) => item.included).length, rejected: value.items.filter((item) => !item.included).length, capture_set: value.capture_set };
     },
     setFrameIncluded: (projectId: string, setId: string, frameId: string, included: boolean) => request<CaptureFrame>(`/projects/${projectId}/capture-sets/${setId}/frames/${frameId}`, { method: "PATCH", body: JSON.stringify({ included }) }),
+    deleteFrame: (projectId: string, setId: string, frameId: string) => request<void>(`/projects/${projectId}/capture-sets/${setId}/frames/${frameId}`, { method: "DELETE" }),
   },
   maps: {
     list: (projectId: string, signal?: AbortSignal) => request<SceneMap[]>(`/projects/${projectId}/maps`, { signal }),
@@ -134,6 +135,7 @@ export const api = {
     manifest: (projectId: string, id: string, signal?: AbortSignal) => request<PointCloudManifest>(`/projects/${projectId}/maps/${id}/point-cloud/manifest`, { signal }),
   },
   probe: {
+    get: (projectId: string, id: string, signal?: AbortSignal) => request<ProbeCalibration>(`/projects/${projectId}/probe-calibrations/${id}`, { signal }),
     list: (projectId: string, signal?: AbortSignal) => request<ProbeCalibration[]>(`/projects/${projectId}/probe-calibrations`, { signal }),
     validate: (projectId: string, file: File) => upload<CalibrationValidation>(`/projects/${projectId}/probe-calibrations/validate`, file),
     import: (projectId: string, validationId: string, activate = true) => request<ProbeCalibration>(`/projects/${projectId}/probe-calibrations/import`, { method: "POST", body: JSON.stringify({ validation_id: validationId, activate }) }),
@@ -142,9 +144,11 @@ export const api = {
     download: (projectId: string, id: string) => downloadFromApi(`/projects/${projectId}/probe-calibrations/${id}/download`, "probe_calibration.json"),
   },
   registration: {
+    get: (projectId: string, id: string, signal?: AbortSignal) => request<Registration>(`/projects/${projectId}/registrations/${id}`, { signal }),
     list: (projectId: string, signal?: AbortSignal) => request<Registration[]>(`/projects/${projectId}/registrations`, { signal }),
     create: (projectId: string, mapId: string, calibrationId: string) => request<Registration>(`/projects/${projectId}/registrations`, { method: "POST", body: JSON.stringify({ map_id: mapId, probe_calibration_id: calibrationId, name: "Metric board registration" }) }),
-    addObservation: (projectId: string, id: string) => request<Registration>(`/projects/${projectId}/registrations/${id}/observations`, { method: "POST", body: JSON.stringify({ source: "current_frame" }) }),
+    addObservation: (projectId: string, id: string, body?: Record<string, unknown>) => request<Registration>(`/projects/${projectId}/registrations/${id}/observations`, { method: "POST", body: JSON.stringify(body ?? { source: "current_frame" }) }),
+    clearObservations: (projectId: string, id: string) => request<Registration>(`/projects/${projectId}/registrations/${id}/observations`, { method: "DELETE" }),
     solve: (projectId: string, id: string) => request<Registration>(`/projects/${projectId}/registrations/${id}/solve`, { method: "POST" }),
     validate: (projectId: string, id: string, acceptWarning = false) => request<Registration>(`/projects/${projectId}/registrations/${id}/validate`, { method: "POST", body: JSON.stringify({ accept_warning: acceptWarning, note: acceptWarning ? "Operator accepted the measured residual warning after inspection." : undefined }) }),
     activate: (projectId: string, id: string) => request<Registration>(`/projects/${projectId}/registrations/${id}/activate`, { method: "POST" }),
@@ -161,6 +165,7 @@ export const api = {
     updateRecord: (projectId: string, sessionId: string, record: PaintedRecord, note: string) => request<PaintedRecord>(`/projects/${projectId}/sessions/${sessionId}/painted-${record.type}s/${record.id}`, { method: "PATCH", body: JSON.stringify({ note }) }),
     deleteRecord: (projectId: string, sessionId: string, record: PaintedRecord) => request<void>(`/projects/${projectId}/sessions/${sessionId}/painted-${record.type}s/${record.id}`, { method: "DELETE" }),
     restoreRecord: (projectId: string, sessionId: string, record: PaintedRecord) => request<PaintedRecord>(`/projects/${projectId}/sessions/${sessionId}/painted-${record.type}s/${record.id}/restore`, { method: "POST" }),
+    annotate: (projectId: string, sessionId: string, recordId: string, points_px: [number, number][]) => request<PaintedRecord>(`/projects/${projectId}/sessions/${sessionId}/painted-records/${recordId}/annotate`, { method: "POST", body: JSON.stringify({ points_px }) }),
     replay: (projectId: string, id: string, from: number, to: number) => request<{ records: PaintedRecord[] }>(`/projects/${projectId}/sessions/${id}/replay${queryString({ from, to })}`),
   },
   exports: {

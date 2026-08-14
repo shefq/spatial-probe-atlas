@@ -6,6 +6,7 @@ import struct
 import time
 import zlib
 from datetime import UTC, datetime
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
@@ -123,6 +124,7 @@ async def camera_preview(websocket: WebSocket) -> None:
     container = websocket.app.state.container
     channels = ["rgb"]
     quality = "balanced"
+    overlay = False
     sequence, previous = 0, -1
     try:
         while True:
@@ -132,6 +134,7 @@ async def camera_preview(websocket: WebSocket) -> None:
                     data = message.get("data", {})
                     channels = list(data.get("channels") or channels)
                     quality = str(data.get("quality", quality))
+                    overlay = bool(data.get("overlay", overlay))
             except TimeoutError:
                 pass
             if container.camera.state != "ready":
@@ -152,6 +155,33 @@ async def camera_preview(websocket: WebSocket) -> None:
             else:
                 step = 1
             rgb = np.frombuffer(frame.rgb, dtype=np.uint8).reshape(frame.height, frame.width, 3)
+            if overlay:
+                rgb = rgb.copy()
+                try:
+                    import cv2
+                    from spatial_probe_atlas.pipelines.probe import detect_blobs, DEFAULT_BLOB_DETECTOR
+                    from spatial_probe_atlas.pipelines.aruco import detect_aruco
+                    
+                    # Detect and draw blobs
+                    diagnostics = detect_blobs(frame.rgb, frame.width, frame.height, DEFAULT_BLOB_DETECTOR)
+                    for idx, kp in enumerate(diagnostics.get("keypoints", [])):
+                        cx = int(round(float(kp.get("x", 0))))
+                        cy = int(round(float(kp.get("y", 0))))
+                        radius = max(4, int(round(float(kp.get("diameter", 12.0)) / 2.0)))
+                        color = (0, 255, 0) if idx < 5 and diagnostics.get("tracked") else (255, 140, 0)
+                        cv2.circle(rgb, (cx, cy), radius, color, 2, cv2.LINE_AA)
+                        cv2.circle(rgb, (cx, cy), 2, color, -1, cv2.LINE_AA)
+                        cv2.putText(rgb, f"P{idx}" if idx < 5 and diagnostics.get("tracked") else f"B{idx}", (cx + radius + 4, max(12, cy - 2)), cv2.FONT_HERSHEY_SIMPLEX, 0.45, color, 1, cv2.LINE_AA)
+                    
+                    # Detect and draw ArUco
+                    detections, raw = detect_aruco(frame.rgb, frame.width, frame.height, "DICT_4X4_50")
+                    if raw:
+                        corners, ids = raw
+                        if ids is not None:
+                            cv2.aruco.drawDetectedMarkers(rgb, corners, ids)
+                except Exception as e:
+                    print(f"[LivePainting Overlay Error] {e}")
+
             sample_rgb = rgb[::step, ::step]
             jpeg_q = 65 if quality == "low" else (80 if quality in {"balanced", "medium"} else 90)
             if "rgb" in channels:
@@ -177,14 +207,21 @@ async def camera_preview(websocket: WebSocket) -> None:
         pass
 
 
-def _probe_metrics(container: Any, settings: dict[str, Any]) -> dict[str, Any]:
+def _probe_metrics(container: Any, settings: dict[str, Any], marker_points_m: list[list[float]] | np.ndarray | None = None, marker_ids: list[int] | None = None) -> dict[str, Any]:
     frame = container.camera.latest_frame
     if frame is None:
         return {"blob_count": 0, "candidate_count": 0, "inliers": 0, "tracked": False, "rejection_reason": "camera_not_ready"}
-    result = detect_blobs(frame.rgb, frame.width, frame.height, settings)
+    result = detect_blobs(frame.rgb, frame.width, frame.height, settings, intrinsic_matrix=getattr(frame, "intrinsic_matrix", None), marker_points_m=marker_points_m)
     if getattr(container.camera.adapter, "adapter_name", "") == "replay":
-        result = {"candidate_count": 5, "tracked": True, "errors": [], "keypoints": [{"x": 40 + i * 15, "y": 40 + (i % 2) * 20, "diameter": 8} for i in range(5)], "simulated": True}
-    return {"blob_count": result["candidate_count"], "candidate_count": result["candidate_count"], "inliers": 5 if result["tracked"] else 0, "tracked": result["tracked"], "reprojection_error_px": 0.91 if result["tracked"] else None, "rejection_reason": None if result["tracked"] else "; ".join(result.get("errors", [])) or "five_marker_correspondence_not_found", "exposure_feedback": "Exposure is usable", "keypoints": result.get("keypoints", []), "simulated": result.get("simulated", False)}
+        result = {"candidate_count": 5, "tracked": True, "errors": [], "keypoints": [{"x": 40 + i * 15, "y": 40 + (i % 2) * 20, "diameter": 8} for i in range(5)], "simulated": True, "reprojection_error_px": 0.91}
+    err_px = result.get("reprojection_error_px", 0.91)
+    
+    aruco_detections = {}
+    if marker_ids is not None:
+        from spatial_probe_atlas.pipelines.aruco import detect_aruco
+        aruco_detections, _ = detect_aruco(frame.rgb, frame.width, frame.height, "DICT_4X4_50", marker_ids)
+        
+    return {"blob_count": result["candidate_count"], "candidate_count": result["candidate_count"], "inliers": 5 if result["tracked"] else 0, "tracked": result["tracked"], "reprojection_error_px": float(err_px) if result["tracked"] and err_px is not None else None, "rejection_reason": None if result["tracked"] else "; ".join(result.get("errors", [])) or ("fewer_than_five_blobs" if result["candidate_count"] < 5 else "no_valid_5_marker_geometry_found"), "exposure_feedback": "Exposure is usable", "keypoints": result.get("keypoints", []), "simulated": result.get("simulated", False), "aruco_detections": aruco_detections}
 
 
 async def _send_probe_images(websocket: WebSocket, frame: Any, sequence: int, metrics: dict[str, Any] | None = None, settings: dict[str, Any] | None = None) -> int:
@@ -223,8 +260,15 @@ async def _send_probe_images(websocket: WebSocket, frame: Any, sequence: int, me
             cv2.circle(overlay, (cx, cy), radius, color, 2, cv2.LINE_AA)
             cv2.circle(overlay, (cx, cy), 2, color, -1, cv2.LINE_AA)
             cv2.putText(overlay, label, (cx + radius + 4, max(12, cy - 2)), cv2.FONT_HERSHEY_SIMPLEX, 0.45, color, 1, cv2.LINE_AA)
-    except Exception:
-        pass
+            
+        from spatial_probe_atlas.pipelines.aruco import detect_aruco
+        aruco_detections, raw = detect_aruco(frame.rgb, frame.width, frame.height, "DICT_4X4_50", None)
+        if raw:
+            corners, ids = raw
+            if ids is not None:
+                cv2.aruco.drawDetectedMarkers(overlay, corners, ids)
+    except Exception as e:
+        print(f"[Probe Tuning Overlay Error] {e}")
 
     for kind, value in (("raw", image), ("binary", binary), ("overlay", overlay)):
         payload = _png(value)
@@ -243,31 +287,122 @@ async def probe_tuning(websocket: WebSocket, project_id: str) -> None:
         await websocket.close(code=4409)
         return
     sequence = 0
+    previous = -1
     settings = dict(DEFAULT_BLOB_DETECTOR)
+    marker_points_m = None
+    marker_ids = None
     try:
         while True:
-            message = await websocket.receive_json()
-            data = message.get("data", {})
-            if data.get("calibration_id"):
-                try:
-                    calibration = container.catalog.get_resource(project_id, "probe_calibration", data["calibration_id"])
-                    settings = dict(calibration["blob_detector"])
-                except AppError:
-                    pass
-            if message.get("type") == "tuning.patch":
-                draft = data.get("blob_detector", {})
-                errors = validate_blob_detector(draft)
-                if errors:
-                    await websocket.send_json(_envelope("error", sequence, {"code": "BLOB_SETTINGS_INVALID", "message": "Draft settings are invalid.", "details": {"field_errors": errors}}))
-                    sequence += 1
-                    continue
-                settings = dict(draft)
-            metrics = _probe_metrics(container, settings)
-            await websocket.send_json(_envelope("probe.tuning_result", sequence, metrics))
-            sequence += 1
-            if container.camera.latest_frame is not None:
-                sequence = await _send_probe_images(websocket, container.camera.latest_frame, sequence, metrics, settings)
-    except WebSocketDisconnect:
+            try:
+                message = await asyncio.wait_for(websocket.receive_json(), timeout=0.001)
+                data = message.get("data", {})
+                if data.get("calibration_id"):
+                    try:
+                        calibration = container.catalog.get_resource(project_id, "probe_calibration", data["calibration_id"])
+                        settings = dict(calibration["blob_detector"])
+                        marker_points_m = calibration.get("probe", {}).get("marker_points_m")
+                    except AppError:
+                        pass
+                if message.get("type") == "tuning.patch":
+                    draft = data.get("blob_detector", {})
+                    if "marker_ids" in data:
+                        marker_ids = data["marker_ids"]
+                    errors = validate_blob_detector(draft)
+                    if errors:
+                        await websocket.send_json(_envelope("error", sequence, {"code": "BLOB_SETTINGS_INVALID", "message": "Draft settings are invalid.", "details": {"field_errors": errors}}))
+                        sequence += 1
+                        continue
+                    settings = dict(draft)
+            except TimeoutError:
+                pass
+
+            latest = container.camera.latest_frame
+            if latest is None or latest.sequence <= previous:
+                await asyncio.sleep(0.05)
+                continue
+                
+            previous = latest.sequence
+            try:
+                await websocket.send_json(_envelope("probe.tuning_result", sequence, metrics))
+                sequence += 1
+                sequence = await _send_probe_images(websocket, latest, sequence, metrics, settings)
+            except (WebSocketDisconnect, RuntimeError, asyncio.CancelledError):
+                break
+    except (WebSocketDisconnect, RuntimeError, asyncio.CancelledError, Exception):
+        pass
+
+
+@router.websocket("/projects/{project_id}/registrations/{registration_id}/tracking")
+async def registration_tracking(websocket: WebSocket, project_id: str, registration_id: str) -> None:
+    if not await _authorize(websocket):
+        return
+    container = websocket.app.state.container
+    sequence = 0
+    try:
+        registration = None
+        try:
+            if registration_id == "active":
+                project = container.catalog.get_project(project_id)
+                active_reg_id = project.get("active_registration_id")
+                if active_reg_id:
+                    registration = container.catalog.get_resource(project_id, "registration", active_reg_id)
+            else:
+                registration = container.catalog.get_resource(project_id, "registration", registration_id)
+        except Exception as e:
+            print(f"[TRACKING WS] Registration lookup exception: {e}")
+
+        if registration:
+            map_id = registration.get("map_id")
+            probe_calib_id = registration.get("probe_calibration_id")
+        else:
+            project = container.catalog.get_project(project_id)
+            map_id = project.get("active_map_id")
+            probe_calib_id = project.get("active_probe_calibration_id")
+
+        if (map_id or (registration and registration.get("is_aruco_mode"))) and probe_calib_id:
+            probe_calibration = container.catalog.get_resource(project_id, "probe_calibration", probe_calib_id)
+            scene_map = container.catalog.get_resource(project_id, "scene_map", map_id) if map_id else None
+            similarity = {"scale": 1.0, "rotation": np.eye(3).reshape(-1).tolist(), "translation": [0,0,0]}
+            
+            from spatial_probe_atlas.pipelines.tracking.factory import create_tracking_pipeline
+            try:
+                pipeline = create_tracking_pipeline(scene_map, similarity, probe_calibration, container.artifacts.root, registration=registration)
+            except Exception as exc:
+                print(f"[TRACKING] Error creating tracking pipeline: {exc}")
+                pipeline = None
+        else:
+            pipeline = None
+
+        previous = -1
+        while True:
+            if container.camera.state != "ready" or pipeline is None:
+                await asyncio.sleep(0.25)
+                continue
+                
+            latest = container.camera.latest_frame
+            if latest is None or latest.sequence <= previous:
+                await asyncio.sleep(0.05)
+                continue
+            
+            previous = latest.sequence
+            result = pipeline.track(registration_id, latest)
+            # Remove high volume/unnecessary outputs for websocket bandwidth
+            result.pop("t_w_p", None)
+            result.pop("tip_w_m", None)
+            
+            try:
+                await websocket.send_json(_envelope("tracking.frame", sequence, result))
+                sequence += 1
+            except (WebSocketDisconnect, RuntimeError, asyncio.CancelledError):
+                break
+            
+            try:
+                await asyncio.wait_for(websocket.receive_text(), timeout=0.001)
+            except TimeoutError:
+                pass
+            except (WebSocketDisconnect, RuntimeError, asyncio.CancelledError):
+                break
+    except (WebSocketDisconnect, RuntimeError, asyncio.CancelledError, Exception):
         pass
 
 
@@ -283,13 +418,18 @@ async def probe_test(websocket: WebSocket, project_id: str) -> None:
             settings = dict(DEFAULT_BLOB_DETECTOR)
             if project.get("active_probe_calibration_id"):
                 settings = container.catalog.get_resource(project_id, "probe_calibration", project["active_probe_calibration_id"])["blob_detector"]
-            await websocket.send_json(_envelope("probe.tracking_test", sequence, _probe_metrics(container, settings)))
-            sequence += 1
+            try:
+                await websocket.send_json(_envelope("probe.tracking_test", sequence, _probe_metrics(container, settings)))
+                sequence += 1
+            except (WebSocketDisconnect, RuntimeError, asyncio.CancelledError):
+                break
             try:
                 await asyncio.wait_for(websocket.receive_text(), timeout=0.2)
             except TimeoutError:
                 pass
-    except WebSocketDisconnect:
+            except (WebSocketDisconnect, RuntimeError, asyncio.CancelledError):
+                break
+    except (WebSocketDisconnect, RuntimeError, asyncio.CancelledError, Exception):
         pass
 
 
@@ -311,7 +451,16 @@ async def session_tracking(websocket: WebSocket, project_id: str, session_id: st
                 command_id = str(message.get("command_id") or data.get("command_id") or "")
                 if command == "paint.point":
                     try:
-                        record = commit_point(container, project_id, session_id, {"command_id": command_id, "frame_id": data.get("frame_id"), "note": "", "low_quality_override_reason": data.get("reason") if data.get("allow_low_quality") else None})
+                        save_image = bool(data.get("save_image", False))
+                        image_bytes = None
+                        if save_image and container.camera.state == "ready":
+                            latest = container.camera.latest_frame
+                            if latest is not None:
+                                rgb = np.frombuffer(latest.rgb, dtype=np.uint8).reshape(latest.height, latest.width, 3)
+                                payload_bytes, _ = _encode_frame(rgb, is_rgb=True, quality=90)
+                                image_bytes = payload_bytes
+                                
+                        record = commit_point(container, project_id, session_id, {"command_id": command_id, "frame_id": data.get("frame_id"), "note": "", "low_quality_override_reason": data.get("reason") if data.get("allow_low_quality") else None, "save_image": save_image}, image_bytes=image_bytes)
                         snapshot = _session_counts(container, project_id, session_id)
                         await websocket.send_json(_envelope("paint.point_committed", sequence, {"command_id": command_id, "record": record, **snapshot}, command_id))
                     except AppError as exc:

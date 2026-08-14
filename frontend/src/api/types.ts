@@ -184,7 +184,7 @@ export interface JobSnapshot {
   error?: {
     code: string;
     message?: string;
-    details?: { defaulted_fields?: string[]; [key: string]: unknown };
+    details?: { defaulted_fields?: string[];[key: string]: unknown };
     retryable?: boolean;
     suggested_action?: string;
   } | null;
@@ -215,6 +215,7 @@ export interface BlobDetectorSettings {
   thresholdStep: number;
   minRepeatability: number;
   minDistBetweenBlobs: number;
+  maxReprojectionError?: number;
   filterByColor: boolean;
   blobColor: number;
   filterByArea: boolean;
@@ -237,6 +238,7 @@ export const DEFAULT_BLOB_SETTINGS: BlobDetectorSettings = {
   thresholdStep: 17,
   minRepeatability: 2,
   minDistBetweenBlobs: 10,
+  maxReprojectionError: 2.5,
   filterByColor: true,
   blobColor: 0,
   filterByArea: true,
@@ -323,6 +325,7 @@ export interface Registration {
   observation_count?: number;
   validation_state?: "pending" | "passed" | "accepted_with_warning" | "failed";
   t_w_b?: number[];
+  board_definition?: any;
   created_at?: IsoTimestamp;
 }
 
@@ -395,11 +398,15 @@ export interface PaintedPoint {
   type: "point";
   session_id: UUID;
   timestamp: IsoTimestamp;
-  position_w_m: [number, number, number];
+  position_w_m?: [number, number, number];
   quality: string;
   note?: string;
+  label?: string;
+  value?: number;
+  color?: string;
   deleted?: boolean;
   metrics?: Record<string, number>;
+  image_uri?: string;
 }
 
 export interface PaintedPath {

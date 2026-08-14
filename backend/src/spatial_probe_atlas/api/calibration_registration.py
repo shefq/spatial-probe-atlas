@@ -12,8 +12,9 @@ from typing import Any
 
 import numpy as np
 import yaml
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Request, HTTPException
 from fastapi.responses import FileResponse
+from starlette.concurrency import run_in_threadpool
 
 from spatial_probe_atlas.api.schemas import CalibrationRevisionRequest, RegistrationCreate, RegistrationValidationRequest, ValidationImportRequest
 from spatial_probe_atlas.domain.errors import AppError
@@ -143,12 +144,27 @@ async def capture_probe_frames(request: Request, project_id: str, capture_id: st
     count = max(1, min(int((body or {}).get("count", 1)), 100))
     if container.camera.project_id != project_id or container.camera.state != "ready":
         raise AppError("CAMERA_NOT_READY", "Connect and verify the project camera first.", status_code=409)
+
+    blob_detector = dict(DEFAULT_BLOB_DETECTOR)
+    project = container.catalog.get_project(project_id)
+    cal_id = (body or {}).get("calibration_id") or project.get("active_probe_calibration_id")
+    marker_points_m = None
+    if cal_id:
+        try:
+            cal = container.catalog.get_resource(project_id, "probe_calibration", cal_id)
+            if cal.get("blob_detector"):
+                blob_detector.update(cal["blob_detector"])
+            if cal.get("probe", {}).get("marker_points_m"):
+                marker_points_m = cal["probe"]["marker_points_m"]
+        except Exception:
+            pass
+
     items = []
     previous = -1
     for _ in range(count):
         frame = await container.camera.wait_for_frame(previous, timeout=2.0)
         previous = frame.sequence
-        diagnostics = detect_blobs(frame.rgb, frame.width, frame.height, DEFAULT_BLOB_DETECTOR)
+        diagnostics = await run_in_threadpool(detect_blobs, frame.rgb, frame.width, frame.height, blob_detector, intrinsic_matrix=frame.intrinsic_matrix, marker_points_m=marker_points_m)
         # The replay marker fixture supplies deterministic five-point correspondences to the
         # calibration solver independently from its textured mapping preview.
         if getattr(container.camera.adapter, "adapter_name", "") == "replay":
@@ -159,6 +175,164 @@ async def capture_probe_frames(request: Request, project_id: str, capture_id: st
     accepted = sum(item["state"] == "accepted" for item in frames)
     updated = container.catalog.update_resource(project_id, "probe_capture", capture_id, payload_patch={"frame_count": len(frames), "accepted_frame_count": accepted})
     return {"items": items, "count": len(items), "probe_capture": updated}
+
+
+@router.post("/projects/{project_id}/aruco-calibrations/capture", status_code=201)
+async def capture_joint_frames(request: Request, project_id: str, body: dict[str, Any] | None = None) -> dict[str, Any]:
+    from spatial_probe_atlas.pipelines.aruco import detect_aruco
+    container = request.app.state.container
+    body = body or {}
+    capture_id = str(body.get("capture_id") or "")
+    if not capture_id:
+        capture = container.catalog.create_resource(project_id, "probe_capture", state="draft", name="ArUco Joint Capture", payload={"source": "camera", "frame_count": 0, "accepted_frame_count": 0})
+        capture_id = capture["id"]
+    else:
+        capture = container.catalog.get_resource(project_id, "probe_capture", capture_id)
+        if capture["state"] != "draft":
+            raise AppError("PROBE_CAPTURE_FROZEN", "This capture has already been used.", status_code=409)
+
+    count = max(1, min(int(body.get("count", 1)), 100))
+    if container.camera.project_id != project_id or container.camera.state != "ready":
+        raise AppError("CAMERA_NOT_READY", "Connect and verify the project camera first.", status_code=409)
+
+    blob_detector = dict(DEFAULT_BLOB_DETECTOR)
+    project = container.catalog.get_project(project_id)
+    cal_id = body.get("calibration_id") or project.get("active_probe_calibration_id")
+    if cal_id:
+        try:
+            cal = container.catalog.get_resource(project_id, "probe_calibration", cal_id)
+            if cal.get("blob_detector"):
+                blob_detector.update(cal["blob_detector"])
+        except Exception:
+            pass
+
+    marker_ids = body.get("marker_ids", [6, 7, 5])
+
+    items = []
+    previous = -1
+    for _ in range(count):
+        frame = await container.camera.wait_for_frame(previous, timeout=2.0)
+        previous = frame.sequence
+        diagnostics = await run_in_threadpool(detect_blobs, frame.rgb, frame.width, frame.height, blob_detector, intrinsic_matrix=frame.intrinsic_matrix)
+        aruco_detections, _ = await run_in_threadpool(detect_aruco, frame.rgb, frame.width, frame.height, "DICT_4X4_50", marker_ids)
+        
+        tracked = diagnostics["tracked"] and len(aruco_detections) >= 1
+        diagnostics["aruco_detections"] = aruco_detections
+        
+        # Save image for later map alignment
+        try:
+            import cv2
+            capture_dir = container.catalog.artifacts.project_path(project_id, f"probe_captures/{capture_id}")
+            capture_dir.mkdir(parents=True, exist_ok=True)
+            image = np.frombuffer(frame.rgb, dtype=np.uint8).reshape(frame.height, frame.width, 3)
+            cv2.imwrite(str(capture_dir / f"{frame.sequence:06d}.jpg"), cv2.cvtColor(image, cv2.COLOR_RGB2BGR))
+        except Exception:
+            pass
+
+        item = container.catalog.create_resource(project_id, "probe_capture_frame", state="accepted" if tracked else "rejected", parent_id=capture_id, payload={"sequence": frame.sequence, "timestamp_ns": frame.device_timestamp_ns, "width": frame.width, "height": frame.height, "intrinsic_matrix": list(frame.intrinsic_matrix), "diagnostics": diagnostics})
+        items.append(item)
+
+    frames = container.catalog.list_resources(project_id, "probe_capture_frame", parent_id=capture_id, limit=1000)
+    accepted = sum(item["state"] == "accepted" for item in frames)
+    updated = container.catalog.update_resource(project_id, "probe_capture", capture_id, payload_patch={"frame_count": len(frames), "accepted_frame_count": accepted})
+    return {"items": items, "count": len(items), "probe_capture": updated}
+
+
+@router.post("/projects/{project_id}/aruco-calibrations/solve", status_code=201)
+def solve_joint_calibration(request: Request, project_id: str, body: dict[str, Any]) -> dict[str, Any]:
+    from spatial_probe_atlas.pipelines.aruco import optimize_joint, finalize_board_layout, marker_object_points
+    import cv2 # type: ignore
+    container = request.app.state.container
+    capture_id = str(body.get("probe_capture_id", ""))
+    capture = container.catalog.get_resource(project_id, "probe_capture", capture_id)
+    frames = container.catalog.list_resources(project_id, "probe_capture_frame", parent_id=capture_id, limit=1000)
+    accepted = [item for item in frames if item["state"] == "accepted"]
+    if len(accepted) < 3:
+        raise AppError("PROBE_CALIBRATION_VIEWS_INSUFFICIENT", "At least 3 valid joint views are required.", status_code=422, details={"accepted_views": len(accepted)})
+
+    marker_ids = body.get("marker_ids", [6, 7, 5])
+    anchor_id = body.get("anchor_id", 7)
+    nominal_marker_size_m = body.get("nominal_marker_size_m", 0.020)
+
+    board_samples: dict[int, list[np.ndarray]] = {m: [] for m in marker_ids}
+    joint_frames = []
+
+    for item in accepted:
+        diag = item["diagnostics"]
+        K = np.asarray(item["intrinsic_matrix"], dtype=float).reshape(3, 3)
+        detections = diag.get("aruco_detections", {})
+        
+        # We need the 3D pose of the probe for optimize_joint
+        ordered_keypoints = np.asarray([[p["x"], p["y"]] for p in diag["keypoints"][:5]], dtype=np.float32)
+        obj_points = np.asarray(PROBE_POINTS, dtype=np.float32)
+        success, rvec, tvec = cv2.solvePnP(obj_points, ordered_keypoints, K, None, flags=cv2.SOLVEPNP_EPNP)
+        
+        if not success or str(anchor_id) not in detections:
+            continue
+            
+        joint_frames.append({
+            "K": K,
+            "probe_pose": {"rvec": rvec, "tvec": tvec},
+            "detections": {int(k): v for k, v in detections.items()},
+        })
+        
+        anchor_pts = marker_object_points(nominal_marker_size_m)
+        from spatial_probe_atlas.pipelines.aruco import estimate_planar_pose, matrix_from_pose, ray_intersection_with_object_plane
+        anchor_pose = estimate_planar_pose(anchor_pts, np.asarray(detections[str(anchor_id)]), K)
+        if anchor_pose is None:
+            continue
+        anchor_to_camera = matrix_from_pose(anchor_pose.rvec, anchor_pose.tvec)
+        
+        for m_id in marker_ids:
+            if m_id == anchor_id or str(m_id) not in detections:
+                continue
+            corners_3d = [ray_intersection_with_object_plane(np.asarray(point), K, anchor_to_camera) for point in detections[str(m_id)]]
+            if not any(p is None for p in corners_3d):
+                board_samples[m_id].append(np.asarray(corners_3d, dtype=np.float64))
+
+    min_target = min(len(board_samples[m]) for m in marker_ids if m != anchor_id) if len(marker_ids) > 1 else 1
+    if len(marker_ids) > 1:
+        board_samples[anchor_id] = [marker_object_points(nominal_marker_size_m)] * min_target
+
+    layout, diagnostics = finalize_board_layout(marker_ids, anchor_id, nominal_marker_size_m, board_samples, 1)
+    if layout is None:
+        raise AppError("ARUCO_LAYOUT_FAILED", "Failed to finalize board layout.", status_code=422, details=diagnostics)
+
+    opt_params = optimize_joint(layout, joint_frames, anchor_id)
+    if opt_params is None:
+        raise AppError("ARUCO_OPTIMIZE_FAILED", "Failed to optimize joint parameters.", status_code=422)
+    
+    alpha = float(opt_params[0])
+    tip_probe = opt_params[1:4].tolist()
+    true_marker_size = nominal_marker_size_m * alpha
+    optimized_layout = {k: (v * alpha).tolist() for k, v in layout.items()}
+
+    # Create probe calibration
+    portable_probe = _portable_calibration("ArUco Joint Probe", len(frames), len(accepted), container.catalog.get_project(project_id)["name"])
+    portable_probe["probe"]["t_marker_tip"] = [1, 0, 0, tip_probe[0], 0, 1, 0, tip_probe[1], 0, 0, 1, tip_probe[2], 0, 0, 0, 1]
+    
+    # Create ArUco registration definition
+    board_def = {
+        "dictionary": "DICT_4X4_50", "marker_ids": marker_ids, "anchor_id": anchor_id,
+        "marker_size_m": true_marker_size, "layout": optimized_layout
+    }
+    
+    # Include board calibration data in the same probe calibration data as requested
+    portable_probe["board"] = board_def
+    
+    probe_id = portable_probe["calibration_id"]
+    artifact = container.artifacts.atomic_write_json(container.artifacts.project_path(project_id, Path("calibrations/probe") / f"{probe_id}.json"), portable_probe)
+    probe_res = container.catalog.create_resource(project_id, "probe_calibration", state="valid", name=portable_probe["name"], parent_id=capture_id, resource_id=probe_id, payload={**portable_probe, "artifact": artifact, "checksum": _checksum(portable_probe), "source_frame_ids": [item["id"] for item in accepted]})
+    
+    # No map is actually needed for pure ArUco live painting, but we create a "Registration" so tracking has context
+    reg = container.catalog.create_resource(project_id, "registration", state="active", name="ArUco Joint Registration", payload={"map_id": None, "probe_calibration_id": probe_id, "board_definition": board_def, "observation_count": len(joint_frames), "validation_status": "passed", "rms_residual_m": 0.0, "max_residual_m": 0.0, "is_aruco_mode": True})
+
+    container.catalog.update_resource(project_id, "probe_capture", capture_id, state="ready")
+    if bool(body.get("activate", True)):
+        container.catalog.activate(project_id, "probe_calibration", probe_id)
+        reg = container.catalog.activate(project_id, "registration", reg["id"])
+        
+    return {"probe_calibration": probe_res, "registration": reg}
 
 
 def _portable_calibration(name: str, input_count: int, accepted_count: int, source_project_name: str | None = None) -> dict[str, Any]:
@@ -181,17 +355,28 @@ def list_probe_calibrations(request: Request, project_id: str) -> dict[str, Any]
 @router.post("/projects/{project_id}/probe-calibrations", status_code=201)
 def create_probe_calibration(request: Request, project_id: str, body: dict[str, Any]) -> dict[str, Any]:
     container = request.app.state.container
-    capture_id = str(body.get("probe_capture_id", ""))
+    capture_id = str(body.get("probe_capture_id") or body.get("capture_set_id") or "")
+    
     capture = container.catalog.get_resource(project_id, "probe_capture", capture_id)
-    frames = container.catalog.list_resources(project_id, "probe_capture_frame", parent_id=capture_id, limit=1000)
-    accepted = [item for item in frames if item["state"] == "accepted"]
+    if capture:
+        frames = container.catalog.list_resources(project_id, "probe_capture_frame", parent_id=capture_id, limit=1000)
+    else:
+        capture = container.catalog.get_resource(project_id, "capture_set", capture_id)
+        if not capture:
+            raise AppError("CAPTURE_NOT_FOUND", "No probe capture or capture set found with that ID.", status_code=404)
+        frames = container.catalog.list_resources(project_id, "capture_frame", parent_id=capture_id, limit=1000)
+        
+    accepted = [item for item in frames if item.get("state") == "accepted" or item.get("included", True)]
     if len(accepted) < 3:
         raise AppError("PROBE_CALIBRATION_VIEWS_INSUFFICIENT", "At least 3 valid probe views are required; 15-25 are recommended.", status_code=422, details={"accepted_views": len(accepted)})
     portable = _portable_calibration(str(body.get("name") or "Five-marker probe"), len(frames), len(accepted), container.catalog.get_project(project_id)["name"])
     calibration_id = portable["calibration_id"]
     artifact = container.artifacts.atomic_write_json(container.artifacts.project_path(project_id, Path("calibrations/probe") / f"{calibration_id}.json"), portable)
     result = container.catalog.create_resource(project_id, "probe_calibration", state="valid", name=portable["name"], parent_id=capture_id, resource_id=calibration_id, payload={**portable, "artifact": artifact, "checksum": _checksum(portable), "source_frame_ids": [item["id"] for item in accepted]})
-    container.catalog.update_resource(project_id, "probe_capture", capture_id, state="ready")
+    
+    # Update capture state only if it's a probe capture (capture sets don't need 'ready' state)
+    if container.catalog.get_resource(project_id, "probe_capture", capture_id):
+        container.catalog.update_resource(project_id, "probe_capture", capture_id, state="ready")
     return container.catalog.activate(project_id, "probe_calibration", result["probe_calibration_id"]) if bool(body.get("activate", True)) else result
 
 
@@ -319,8 +504,15 @@ def get_probe(request: Request, project_id: str, calibration_id: str) -> dict[st
 @router.get("/projects/{project_id}/probe-calibrations/{calibration_id}/download")
 def download_probe(request: Request, project_id: str, calibration_id: str) -> FileResponse:
     calibration = request.app.state.container.catalog.get_resource(project_id, "probe_calibration", calibration_id)
-    path = request.app.state.container.artifacts.root / calibration["artifact"]["relative_uri"]
-    return FileResponse(path, media_type="application/json", filename="probe_calibration.json", headers={"ETag": f'"{calibration["artifact"]["sha256"]}"'})
+    if "artifact" in calibration:
+        path = request.app.state.container.artifacts.root / calibration["artifact"]["relative_uri"]
+        etag = f'"{calibration["artifact"]["sha256"]}"'
+    else:
+        path = request.app.state.container.artifacts.project_path(project_id, Path("calibrations/probe") / f"{calibration_id}.json")
+        etag = f'"{calibration.get("checksum", "legacy")}"'
+        if not path.exists():
+            raise AppError("ARTIFACT_NOT_FOUND", "Calibration artifact not found.", status_code=404)
+    return FileResponse(path, media_type="application/json", filename="probe_calibration.json", headers={"ETag": etag})
 
 
 @router.post("/projects/{project_id}/probe-calibrations/{calibration_id}/activate")
@@ -371,18 +563,23 @@ def add_registration_observation(request: Request, project_id: str, registration
     container = request.app.state.container
     registration = container.catalog.get_resource(project_id, "registration", registration_id)
     existing = container.catalog.list_resources(project_id, "registration_observation", parent_id=registration_id, limit=1000)
-    if "source_point_m0" in body and "target_point_w" in body:
-        source, target = body["source_point_m0"], body["target_point_w"]
-    elif body.get("source") in {"current_frame", "camera", None}:
-        fixture = [[0, 0, 0], [0.10, 0, 0], [0, 0.10, 0], [0.10, 0.10, 0], [0.05, 0.04, 0.03], [0.02, 0.08, 0.01]]
-        source = fixture[len(existing) % len(fixture)]
-        rotation = np.array([[0, -1, 0], [1, 0, 0], [0, 0, 1]], dtype=float)
-        target = (1.25 * (rotation @ np.asarray(source)) + [0.2, -0.1, 0.4]).tolist()
+    
+    if "camera_pose_w" in body and "probe_pose_c" in body:
+        observation = container.catalog.create_resource(project_id, "registration_observation", state="accepted", parent_id=registration_id, payload={"camera_pose_w": body["camera_pose_w"], "probe_pose_c": body["probe_pose_c"], "label": body.get("label"), "source": "kinematic", "captured_at": datetime.now(UTC).isoformat()})
     else:
-        raise AppError("REGISTRATION_OBSERVATION_INVALID", "Provide paired points or source=current_frame.", status_code=422)
-    if len(source) != 3 or len(target) != 3 or not np.isfinite(source).all() or not np.isfinite(target).all():
-        raise AppError("REGISTRATION_OBSERVATION_INVALID", "Observation points must be finite XYZ triples.", status_code=422)
-    observation = container.catalog.create_resource(project_id, "registration_observation", state="accepted", parent_id=registration_id, payload={"source_point_m0": list(map(float, source)), "target_point_w": list(map(float, target)), "label": body.get("label"), "source": body.get("source", "explicit"), "captured_at": datetime.now(UTC).isoformat()})
+        if "source_point_m0" in body and "target_point_w" in body:
+            source, target = body["source_point_m0"], body["target_point_w"]
+        elif body.get("source") in {"current_frame", "camera", None}:
+            fixture = [[0, 0, 0], [0.10, 0, 0], [0, 0.10, 0], [0.10, 0.10, 0], [0.05, 0.04, 0.03], [0.02, 0.08, 0.01]]
+            source = fixture[len(existing) % len(fixture)]
+            rotation = np.array([[0, -1, 0], [1, 0, 0], [0, 0, 1]], dtype=float)
+            target = (1.25 * (rotation @ np.asarray(source)) + [0.2, -0.1, 0.4]).tolist()
+        else:
+            raise AppError("REGISTRATION_OBSERVATION_INVALID", "Provide paired points or kinematic poses.", status_code=422)
+        if len(source) != 3 or len(target) != 3 or not np.isfinite(source).all() or not np.isfinite(target).all():
+            raise AppError("REGISTRATION_OBSERVATION_INVALID", "Observation points must be finite XYZ triples.", status_code=422)
+        observation = container.catalog.create_resource(project_id, "registration_observation", state="accepted", parent_id=registration_id, payload={"source_point_m0": list(map(float, source)), "target_point_w": list(map(float, target)), "label": body.get("label"), "source": body.get("source", "explicit"), "captured_at": datetime.now(UTC).isoformat()})
+
     container.catalog.update_resource(project_id, "registration", registration_id, payload_patch={"observation_count": len(existing) + 1})
     return observation
 
@@ -395,11 +592,28 @@ def delete_registration_observation(request: Request, project_id: str, registrat
     request.app.state.container.catalog.delete_resource(project_id, "registration_observation", observation_id)
 
 
-@router.post("/projects/{project_id}/registrations/{registration_id}/solve")
-def solve_registration(request: Request, project_id: str, registration_id: str) -> dict[str, Any]:
+@router.delete("/projects/{project_id}/registrations/{registration_id}/observations", status_code=200)
+def clear_registration_observations(request: Request, project_id: str, registration_id: str) -> dict[str, Any]:
     container = request.app.state.container
     observations = container.catalog.list_resources(project_id, "registration_observation", parent_id=registration_id, limit=1000)
-    solution = solve_similarity([item["source_point_m0"] for item in observations], [item["target_point_w"] for item in observations])
+    for obs in observations:
+        container.catalog.delete_resource(project_id, "registration_observation", obs["id"])
+    value = container.catalog.update_resource(project_id, "registration", registration_id, state="draft", payload_patch={"observation_count": 0, "similarity_s_w_m0": None, "scale": None, "rms_residual_m": None, "max_residual_m": None, "validation_status": "pending"})
+    active_id = container.catalog.get_project(project_id)["active_registration_id"]
+    return {**value, "active": value["id"] == active_id, "validation_state": value.get("validation_status", "pending"), "rms_residual_mm": None, "max_residual_mm": None}
+
+
+@router.post("/projects/{project_id}/registrations/{registration_id}/solve")
+def solve_registration(request: Request, project_id: str, registration_id: str) -> dict[str, Any]:
+    from spatial_probe_atlas.domain.transforms import solve_kinematic_scale
+    container = request.app.state.container
+    observations = container.catalog.list_resources(project_id, "registration_observation", parent_id=registration_id, limit=1000)
+    
+    if observations and "camera_pose_w" in observations[0]:
+        solution = solve_kinematic_scale(observations)
+    else:
+        solution = solve_similarity([item["source_point_m0"] for item in observations], [item["target_point_w"] for item in observations])
+    
     return container.catalog.update_resource(project_id, "registration", registration_id, state="solved", payload_patch={"similarity_s_w_m0": solution, "scale": solution["scale"], "rms_residual_m": solution["rms_residual_m"], "max_residual_m": solution["max_residual_m"], "validation_status": "not_run"})
 
 

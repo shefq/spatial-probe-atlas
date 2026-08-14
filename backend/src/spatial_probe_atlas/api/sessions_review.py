@@ -11,7 +11,7 @@ import numpy as np
 from fastapi import APIRouter, Header, Query, Request
 from fastapi.responses import FileResponse
 
-from spatial_probe_atlas.api.schemas import ExportCreate, PaintedPathCreate, PaintedPointCreate, RecordPatch, SessionCreate, SessionNote
+from spatial_probe_atlas.api.schemas import ExportCreate, PaintedPathCreate, PaintedPointCreate, RecordPatch, SessionCreate, SessionNote, RecordAnnotationCreate
 from spatial_probe_atlas.domain.errors import AppError
 from spatial_probe_atlas.pipelines.tracking.replay import make_replay_tracking_frame, quality_gate
 from spatial_probe_atlas.services.review_export import (
@@ -47,6 +47,10 @@ def _session_preflight(container: Any, project_id: str, session: dict[str, Any] 
 def _record_view(value: dict[str, Any]) -> dict[str, Any]:
     record_type = "point" if value["kind"] == "painted_point" else "path"
     result = {**value, "type": record_type, "session_id": value["parent_id"]}
+    if isinstance(result.get("created_at"), datetime):
+        result["created_at"] = result["created_at"].isoformat()
+    if isinstance(result.get("updated_at"), datetime):
+        result["updated_at"] = result["updated_at"].isoformat()
     if record_type == "point":
         result["id"] = value["point_id"]
     else:
@@ -82,6 +86,87 @@ def _map_records(values: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [_record_view(item) for item in values]
 
 
+@router.post("/projects/{project_id}/sessions/{session_id}/painted-records/{record_id}/annotate")
+def annotate_record(request: Request, project_id: str, session_id: str, record_id: str, body: RecordAnnotationCreate) -> dict[str, Any]:
+    import cv2
+    import numpy as np
+    from spatial_probe_atlas.domain.transforms import compose_tip
+    from spatial_probe_atlas.pipelines.aruco import matrix_from_pose
+    
+    container = request.app.state.container
+    session = container.catalog.get_resource(project_id, "session", session_id)
+    record = container.catalog.get_resource(project_id, "painted_point", record_id)
+    
+    if record["state"] != "needs_annotation":
+        raise AppError("RECORD_NOT_ANNOTATABLE", "Record does not need annotation.", status_code=409)
+        
+    metrics = record.get("metrics", {})
+    t_w_c_list = metrics.get("board_w_c")
+    if not t_w_c_list:
+        raise AppError("MISSING_CAMERA_POSE", "Record lacks camera pose (board_w_c). Cannot annotate.", status_code=409)
+        
+    intrinsics = metrics.get("intrinsics")
+    if not intrinsics:
+        raise AppError("MISSING_INTRINSICS", "Record lacks intrinsics.", status_code=409)
+        
+    K = np.asarray(intrinsics, dtype=np.float32).reshape(3, 3)
+    
+    probe = container.catalog.get_resource(project_id, "probe_calibration", session.get("probe_calibration_id"))
+    probe_config = probe.get("probe", {}) if isinstance(probe.get("probe"), dict) else probe
+    marker_points = probe_config.get("marker_points_m") or probe.get("marker_points_m")
+    t_marker_tip = probe_config.get("t_marker_tip") or probe.get("t_marker_tip")
+    
+    if not marker_points or not t_marker_tip:
+        raise AppError("MISSING_PROBE_CALIBRATION", "Probe calibration is missing marker points or tip offset.", status_code=409)
+        
+    obj_points = np.asarray(marker_points, dtype=np.float32)
+    img_points = np.asarray(body.points_px, dtype=np.float32)
+    
+    if len(img_points) != 5:
+        raise AppError("INVALID_ANNOTATION", "Exactly 5 points required.", status_code=422)
+        
+    if len(obj_points) != 5:
+        raise AppError("INVALID_ANNOTATION", f"Expected 5 object points, but probe calibration has {len(obj_points)} points.", status_code=422)
+        
+    import itertools
+    best_error = float("inf")
+    best_rvec, best_tvec = None, None
+    
+    for perm in itertools.permutations(range(5)):
+        permuted_img = img_points[list(perm)]
+        ok, rvec_e, tvec_e = cv2.solvePnP(obj_points, permuted_img, K, None, flags=cv2.SOLVEPNP_EPNP)
+        if not ok or tvec_e[2, 0] <= 0:
+            continue
+            
+        ok_i, rvec_i, tvec_i = cv2.solvePnP(obj_points, permuted_img, K, None, rvec_e, tvec_e, useExtrinsicGuess=True, flags=cv2.SOLVEPNP_ITERATIVE)
+        rvec_eval, tvec_eval = (rvec_i, tvec_i) if ok_i else (rvec_e, tvec_e)
+        
+        proj, _ = cv2.projectPoints(obj_points, rvec_eval, tvec_eval, K, None)
+        err = float(np.sqrt(np.mean(np.sum((proj[:, 0] - permuted_img) ** 2, axis=1))))
+        
+        if err < best_error:
+            best_error = err
+            best_rvec, best_tvec = rvec_eval, tvec_eval
+            
+    if best_rvec is None or best_tvec is None or not np.isfinite(best_error):
+        raise AppError("PNP_FAILED", "Could not find a valid PnP solution for the selected 5 points.", status_code=422)
+        
+    t_w_p = compose_tip(t_w_c_list, matrix_from_pose(best_rvec, best_tvec).reshape(-1).tolist(), t_marker_tip)
+    tip_w_m = np.asarray(t_w_p).reshape(4, 4)[:3, 3].tolist()
+    
+    metrics["annotation_reprojection_error_px"] = round(best_error, 3)
+    
+    patch = {
+        "position_w_m": tip_w_m,
+        "quality": "annotated",
+        "state": "committed",
+        "metrics": metrics,
+    }
+    
+    updated = container.catalog.update_resource(project_id, "painted_point", record_id, payload_patch=patch, state="committed")
+    return _record_view(updated)
+
+
 @router.get("/projects/{project_id}/sessions")
 def list_sessions(request: Request, project_id: str) -> list[dict[str, Any]]:
     container = request.app.state.container
@@ -94,13 +179,22 @@ def create_session(request: Request, project_id: str, body: SessionCreate, idemp
     cached = container.catalog.idempotent_response(f"session.create:{project_id}", idempotency_key)
     if cached:
         return cached
+    checks = _session_preflight(container, project_id)
+    dependency_keys = {"map", "probe", "registration", "dependency_binding"}
+    if any(not item["passed"] for item in checks if item["key"] in dependency_keys):
+        raise AppError(
+            "SESSION_DEPENDENCY_UNBOUND",
+            "Create a session only after an exact active metric map, probe calibration, and registration are bound.",
+            status_code=409,
+            details={"checks": checks},
+        )
     project = container.catalog.get_project(project_id)
-    scene_map = container.catalog.get_resource(project_id, "scene_map", project["active_map_id"]) if project["active_map_id"] else None
-    probe_calibration = container.catalog.get_resource(project_id, "probe_calibration", project["active_probe_calibration_id"]) if project["active_probe_calibration_id"] else None
-    registration = container.catalog.get_resource(project_id, "registration", project["active_registration_id"]) if project["active_registration_id"] else None
+    scene_map = container.catalog.get_resource(project_id, "scene_map", project["active_map_id"]) if project.get("active_map_id") else None
+    probe_calibration = container.catalog.get_resource(project_id, "probe_calibration", project["active_probe_calibration_id"]) if project.get("active_probe_calibration_id") else None
+    registration = container.catalog.get_resource(project_id, "registration", project["active_registration_id"]) if project.get("active_registration_id") else None
     payload = {
-        "map_id": project["active_map_id"], "probe_calibration_id": project["active_probe_calibration_id"],
-        "registration_id": project["active_registration_id"], "notes": body.notes, "compute_profile": "cpu_replay_tracking",
+        "map_id": project.get("active_map_id"), "probe_calibration_id": project.get("active_probe_calibration_id"),
+        "registration_id": project.get("active_registration_id"), "notes": body.notes, "compute_profile": "cpu_replay_tracking",
         "map_revision": scene_map["revision"] if scene_map else None,
         "probe_calibration_revision": probe_calibration["revision"] if probe_calibration else None,
         "registration_revision": registration["revision"] if registration else None,
@@ -177,9 +271,19 @@ def tracking_snapshot(request: Request, project_id: str, session_id: str) -> dic
     return _session_view(container, project_id, session_id)
 
 
-def commit_point(container: Any, project_id: str, session_id: str, body: PaintedPointCreate | dict[str, Any]) -> dict[str, Any]:
+def commit_point(
+    container: Any,
+    project_id: str,
+    session_id: str,
+    body: PaintedPointCreate | dict[str, Any],
+    image_bytes: bytes | None = None,
+    image_intrinsics: tuple[float, ...] | list[float] | None = None,
+    window_s: float = 0.0,
+    use_window_average: bool = False,
+) -> dict[str, Any]:
+    import uuid
     data = body.model_dump() if isinstance(body, PaintedPointCreate) else body
-    command_id = str(data.get("command_id") or data.get("commandId") or "")
+    command_id = str(data.get("command_id") or data.get("commandId") or uuid.uuid4())
     cached = container.catalog.idempotent_response(f"paint.point:{session_id}", command_id)
     if cached:
         return cached
@@ -189,20 +293,103 @@ def commit_point(container: Any, project_id: str, session_id: str, body: Painted
     frame = container.tracking_snapshots.get(session_id) or next_tracking(container, project_id, session_id)
     accepted, reasons = quality_gate(frame)
     override = str(data.get("low_quality_override_reason") or "").strip()
-    if not accepted and not override:
-        raise AppError("PAINT_QUALITY_REJECTED", "The point did not pass tracking quality gates.", status_code=422, details={"reasons": reasons})
-    position = data.get("position_w_m") or frame["tip_w_m"]
-    if len(position) != 3 or not np.isfinite(position).all():
+    save_image = data.get("save_image", False)
+    # Allow client to override window_s / use_window_average
+    effective_window_s = float(data.get("window_s", window_s))
+    effective_avg = bool(data.get("use_window_average", use_window_average))
+    
+    # --- Temporal window search for probe tip position ---
+    window_tip: list[float] | None = None
+    window_entry_count = 0
+    if effective_window_s > 0:
+        import time as _time
+        click_t = _time.monotonic_ns()
+        half_ns = int(effective_window_s * 1e9)
+        lo, hi = click_t - half_ns, click_t + half_ns
+        candidates = [
+            entry for entry in container.probe_tip_buffer
+            if entry["session_id"] == session_id and lo <= entry["t"] <= hi
+        ]
+        window_entry_count = len(candidates)
+        if candidates:
+            if effective_avg:
+                tips = np.asarray([c["tip_w_m"] for c in candidates], dtype=float)
+                window_tip = tips.mean(axis=0).tolist()
+            else:
+                # Pick the entry closest to click time
+                best = min(candidates, key=lambda e: abs(e["t"] - click_t))
+                window_tip = best["tip_w_m"]
+
+    # Decide final position; probe does not need to be tracked this exact frame if we
+    # found a tip position in the temporal window
+    final_tip = data.get("position_w_m") or window_tip or frame.get("tip_w_m") or []
+    probe_tracked_via_window = window_tip is not None and not accepted
+    
+    # Quality gate: reject only if probe is not accepted AND we have no window fallback
+    # and no override and it's not a save-image request
+    if not accepted and not probe_tracked_via_window and not override and not save_image:
+        reason_detail = f" ({', '.join(reasons)})" if reasons else ""
+        raise AppError("PAINT_QUALITY_REJECTED", f"The point did not pass tracking quality gates{reason_detail}.", status_code=422, details={"reasons": reasons})
+        
+    t_w_c = frame.get("t_w_c")
+    if save_image and not t_w_c:
+        raise AppError("PAINT_CAMERA_LOST", "Camera tracking lost. Cannot save manual annotation.", status_code=422)
+        
+    position = final_tip
+    if not save_image and (len(position) != 3 or not np.isfinite(position).all()):
         raise AppError("PAINT_POSITION_INVALID", "Paint coordinates must be a finite map-frame XYZ triple.", status_code=422)
+        
+    image_uri = None
+    if save_image and image_bytes:
+        filename = f"capture_{datetime.now(UTC).strftime('%Y%m%d_%H%M%S_%f')}.jpg"
+        relative_path = Path("sessions") / session_id / filename
+        full_path = container.artifacts.project_path(project_id, relative_path)
+        container.artifacts.atomic_write_bytes(full_path, image_bytes)
+        image_uri = str(relative_path.as_posix())
+        
     timestamp = datetime.now(UTC).isoformat()
+    
+    probe_tracked = frame.get("probe_state") == "tracked" and isinstance(frame.get("tip_w_m"), list) and len(frame["tip_w_m"]) == 3
+    
+    # Determine quality state:
+    # - needs_annotation: probe tip genuinely unavailable AND no window fallback AND image was saved
+    # - window_capture: probe wasn't tracked this exact frame but we found a tip in the time window
+    # - flagged_low_quality: probe was tracked but some other quality metric (camera, latency) failed
+    # - good/tracked: everything passed
+    if save_image and not probe_tracked and not probe_tracked_via_window:
+        quality_state = "needs_annotation"
+    elif probe_tracked_via_window:
+        quality_state = "window_capture"
+    elif not accepted:
+        quality_state = "flagged_low_quality"
+    else:
+        quality_state = str(data.get("quality") or frame.get("quality", "unknown"))
+
+    if quality_state == "needs_annotation":
+        record_state = "needs_annotation"
+    elif quality_state == "flagged_low_quality":
+        record_state = "flagged_low_quality"
+    else:
+        record_state = "committed"
+    
     payload = {
-        "type": "point", "session_id": session_id, "command_id": command_id, "frame_id": data.get("frame_id") or frame["frame_id"],
-        "timestamp": timestamp, "position_w_m": list(map(float, position)), "orientation_w_xyzw": [0, 0, 0, 1],
-        "quality": "flagged_low_quality" if not accepted else str(data.get("quality") or frame["quality"]), "note": data.get("note", ""),
-        "override_reason": override or None, "metrics": {"camera_inliers": frame["camera_inliers"], "camera_reprojection_error_px": frame["camera_reprojection_error_px"], "probe_inliers": frame["probe_inliers"], "probe_reprojection_error_px": frame["probe_reprojection_error_px"], "latency_ms": frame["latency_ms"]},
+        "type": "point", "session_id": session_id, "command_id": command_id, "frame_id": data.get("frame_id") or frame.get("frame_id"),
+        "timestamp": timestamp, "position_w_m": list(map(float, position)) if len(position) == 3 and np.isfinite(position).all() else [], 
+        "orientation_w_xyzw": [0, 0, 0, 1],
+        "quality": quality_state, "note": data.get("note", ""),
+        "label": data.get("label"), "value": data.get("value"), "color": data.get("color"),
+        "override_reason": override or None, "metrics": {
+            "camera_inliers": frame.get("camera_inliers"), "camera_reprojection_error_px": frame.get("camera_reprojection_error_px"),
+            "probe_inliers": frame.get("probe_inliers"), "probe_reprojection_error_px": frame.get("probe_reprojection_error_px"),
+            "latency_ms": frame.get("latency_ms"), "board_w_c": t_w_c, "intrinsics": list(image_intrinsics) if image_intrinsics else None,
+            "window_s": effective_window_s if effective_window_s > 0 else None,
+            "window_entry_count": window_entry_count if effective_window_s > 0 else None,
+            "window_averaged": effective_avg if effective_window_s > 0 and window_tip is not None else None,
+        },
         "coordinate_frame": "W", "units": "m",
+        "image_uri": image_uri,
     }
-    created = container.catalog.create_resource(project_id, "painted_point", state="flagged_low_quality" if not accepted else "committed", parent_id=session_id, payload=payload)
+    created = container.catalog.create_resource(project_id, "painted_point", state=record_state, parent_id=session_id, payload=payload)
     result = _record_view(created)
     container.catalog.save_idempotent_response(f"paint.point:{session_id}", command_id, result)
     return result
@@ -344,6 +531,30 @@ def undo_last(request: Request, project_id: str, session_id: str) -> dict[str, A
     latest = max(records, key=lambda item: item.get("timestamp", item.get("started_at", "")))
     kind = _record_kind(latest["type"])
     return _record_view(container.catalog.update_resource(project_id, kind, latest["id"], deleted=True))
+
+
+@router.get("/projects/{project_id}/sessions/{session_id}/painted-records/{record_id}/image")
+def download_record_image(request: Request, project_id: str, session_id: str, record_id: str) -> FileResponse:
+    container = request.app.state.container
+    try:
+        record = container.catalog.get_resource(project_id, "painted_point", record_id)
+    except AppError:
+        raise AppError("PAINT_RECORD_NOT_FOUND", "The record does not exist.", status_code=404)
+        
+    if record["parent_id"] != session_id:
+        raise AppError("PAINT_RECORD_NOT_FOUND", "The record does not belong to this session.", status_code=404)
+        
+    image_uri = record.get("payload", {}).get("image_uri") or record.get("image_uri")
+    if not image_uri:
+        raise AppError("PAINT_RECORD_NO_IMAGE", "This record does not have an associated image.", status_code=404)
+    
+    path = container.artifacts.root / image_uri
+    if not path.is_file():
+        path = container.artifacts.project_dir(project_id) / image_uri
+        if not path.is_file():
+            raise AppError("ARTIFACT_NOT_FOUND", "The image file could not be found.", status_code=404)
+    
+    return FileResponse(path, media_type="image/jpeg", headers={"Cache-Control": "public, max-age=31536000, immutable"})
 
 
 @router.get("/projects/{project_id}/sessions/{session_id}/replay")

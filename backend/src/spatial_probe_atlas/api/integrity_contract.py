@@ -79,20 +79,20 @@ def _strict_session_preflight(container: Any, project_id: str, session: dict[str
         pass
     exact_binding = bool(
         registration
-        and registration.get("map_id") == project.get("active_map_id")
+        and (registration.get("map_id") == project.get("active_map_id") or registration.get("is_aruco_mode"))
         and registration.get("probe_calibration_id") == project.get("active_probe_calibration_id")
     )
     registration_valid = bool(
         registration
-        and registration.get("state") == "active"
-        and registration.get("validation_status") in {"passed", "accepted_with_warning"}
-        and _similarity_valid(registration.get("similarity_s_w_m0"))
+        and registration.get("state") in {"active", "valid"}
+        and (registration.get("validation_status") in {"passed", "accepted_with_warning"} or registration.get("is_aruco_mode"))
+        and (_similarity_valid(registration.get("similarity_s_w_m0")) or registration.get("is_aruco_mode"))
     )
     free = shutil.disk_usage(container.settings.data_root).free
     checks = [
         {"key": "camera", "label": "Camera ready", "passed": container.camera.project_id == project_id and container.camera.state == "ready", "detail": container.camera.state, "required_route": f"/projects/{project_id}/camera"},
-        {"key": "map", "label": "Metric map active", "passed": bool(scene_map and scene_map.get("state") == "ready_metric"), "required_route": f"/projects/{project_id}/mapping"},
-        {"key": "probe", "label": "Probe calibration active", "passed": bool(probe and probe.get("state") == "active"), "required_route": f"/projects/{project_id}/registration"},
+        {"key": "map", "label": "Metric map active", "passed": bool(scene_map and scene_map.get("state") in {"ready_metric", "ready", "active"}), "required_route": f"/projects/{project_id}/mapping"},
+        {"key": "probe", "label": "Probe calibration active", "passed": bool(probe and probe.get("state") in {"active", "valid"}), "required_route": f"/projects/{project_id}/registration"},
         {"key": "registration", "label": "Metric registration active", "passed": registration_valid, "required_route": f"/projects/{project_id}/registration"},
         {"key": "dependency_binding", "label": "Registration matches active map and probe revisions", "passed": exact_binding, "required_route": f"/projects/{project_id}/registration"},
         {"key": "storage", "label": "Storage reserve available", "passed": free > container.settings.disk_reserve_bytes, "detail": f"{free} bytes free"},

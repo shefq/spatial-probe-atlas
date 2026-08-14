@@ -1,0 +1,7 @@
+
+
+# LaTeX auxiliary & build files
+*.aux
+*.bbl
+*.fdb_latexmk
+*.log

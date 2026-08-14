@@ -9,8 +9,8 @@ import numpy as np
 from spatial_probe_atlas.domain.transforms import compose_tip
 
 
-CAMERA_MIN_INLIERS = 30
-CAMERA_MAX_REPROJECTION_ERROR_PX = 3.0
+CAMERA_MIN_INLIERS = 15
+CAMERA_MAX_REPROJECTION_ERROR_PX = 8.0
 PROBE_MIN_INLIERS = 4
 PROBE_MAX_REPROJECTION_ERROR_PX = 2.5
 MAX_TRACKING_LATENCY_MS = 150.0
@@ -53,7 +53,9 @@ def make_replay_tracking_frame(session_id: str, sequence: int, t_marker_tip: lis
 
 def quality_gate(frame: dict[str, Any]) -> tuple[bool, list[str]]:
     reasons: list[str] = []
-    if frame.get("camera_state") != "tracked" or int(frame.get("camera_inliers", 0)) < CAMERA_MIN_INLIERS or float(frame.get("camera_reprojection_error_px") or math.inf) > CAMERA_MAX_REPROJECTION_ERROR_PX:
+    is_aruco = bool(frame.get("is_aruco_mode") or frame.get("camera_inliers_is_aruco"))
+    min_cam_inliers = 4 if is_aruco else CAMERA_MIN_INLIERS
+    if frame.get("camera_state") != "tracked" or int(frame.get("camera_inliers", 0)) < min_cam_inliers or float(frame.get("camera_reprojection_error_px") or math.inf) > CAMERA_MAX_REPROJECTION_ERROR_PX:
         reasons.append("camera_localization_quality")
     if frame.get("probe_state") != "tracked" or int(frame.get("probe_inliers", 0)) < PROBE_MIN_INLIERS or float(frame.get("probe_reprojection_error_px") or math.inf) > PROBE_MAX_REPROJECTION_ERROR_PX:
         reasons.append("probe_tracking_quality")

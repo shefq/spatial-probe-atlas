@@ -19,6 +19,7 @@ const numericFields: Array<{
   { key: "thresholdStep", label: "Threshold step", min: 0.1, max: 255, step: 0.5 },
   { key: "minRepeatability", label: "Minimum repeatability", min: 1, max: 100, step: 1, integer: true },
   { key: "minDistBetweenBlobs", label: "Minimum blob distance (px)", min: 0, max: 1000, step: 0.5 },
+  { key: "maxReprojectionError", label: "Maximum reprojection error (px)", min: 0.1, max: 50.0, step: 0.1 },
   { key: "blobColor", label: "Blob colour (0 black, 255 white)", min: 0, max: 255, step: 1, integer: true, group: "filterByColor" },
   { key: "minArea", label: "Minimum area (px²)", min: 0, max: 5000, step: 1, group: "filterByArea" },
   { key: "maxArea", label: "Maximum area (px²)", min: 0.01, max: 10000, step: 1, group: "filterByArea" },
@@ -131,7 +132,7 @@ export function BlobDetectorTuningModal({ open, projectId, calibration, onSaved,
       const parsed = JSON.parse(await file.text()) as { blob_detector?: BlobDetectorSettings };
       if (!parsed.blob_detector) throw new Error("The file does not contain blob_detector settings.");
       const keys = [...numericFields.map((field) => field.key), ...booleanFields.map((field) => field.key)];
-      if (keys.some((key) => !(key in parsed.blob_detector!))) throw new Error("The detector settings are incomplete; all 19 fields are required.");
+      if (keys.some((key) => !(key in parsed.blob_detector!))) throw new Error(`The detector settings are incomplete; all ${keys.length} fields are required.`);
       setDraft({ ...parsed.blob_detector });
     } catch (value) { setImportError(value instanceof Error ? value.message : "The selected file is invalid."); }
   };

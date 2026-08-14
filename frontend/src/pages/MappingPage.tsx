@@ -119,8 +119,17 @@ export function MappingPage() {
       setSelectedSet((current) => current ? { ...current, frames: current.frames?.map((item) => item.id === updated.id ? updated : item), accepted_frame_count: current.accepted_frame_count + (updated.included ? 1 : -1), excluded_frame_count: current.excluded_frame_count + (updated.included ? -1 : 1) } : current);
     } catch (value) { setError(errorMessage(value)); }
   };
+  const deleteFrame = async (e: React.MouseEvent, frame: CaptureFrame) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (!selectedSet || !window.confirm(`Delete frame ${frame.sequence}?`)) return;
+    try {
+      await api.capture.deleteFrame(projectId, selectedSet.id, frame.id);
+      setSelectedSet((current) => current ? { ...current, frames: current.frames?.filter((item) => item.id !== frame.id), frame_count: current.frame_count - 1, accepted_frame_count: current.accepted_frame_count - (frame.included ? 1 : 0), excluded_frame_count: current.excluded_frame_count - (frame.included ? 0 : 1) } : current);
+    } catch (value) { setError(errorMessage(value)); }
+  };
   const buildMap = async () => {
-    if (!selectedSet || selectedSet.accepted_frame_count < 20) return;
+    if (!selectedSet || selectedSet.accepted_frame_count < 7) return;
     setBusy(true);
     try {
       const latestSet = await api.capture.getSet(projectId, selectedSet.id);
@@ -139,7 +148,7 @@ export function MappingPage() {
   };
   const selectedMap = maps.find((map) => map.id === selectedMapId);
   const acceptedFrames = selectedSet?.accepted_frame_count ?? 0;
-  const canBuild = acceptedFrames >= 20 && !activeJob;
+  const canBuild = acceptedFrames >= 7 && !activeJob;
 
   useEffect(() => {
     if (!viewerRef.current || !selectedMapId || !projectId) return;
@@ -165,11 +174,11 @@ export function MappingPage() {
       <div className="workflow-grid workflow-grid--mapping">
         <div className="mapping-main">
           <Card className="viewer-card" title="Spatial map inspection" eyebrow={selectedMap ? `${selectedMap.name} · ${selectedMap.state}` : "NO MAP SELECTED"} actions={selectedMap ? <><Segmented label="View mode" value={viewMode} options={[{ value: "points", label: "Points" }, { value: "mesh", label: "Mesh" }]} onChange={(v) => setViewMode(v as any)} /><select className="select select--compact" value={selectedMapId} onChange={(event) => setSelectedMapId(event.target.value)}>{maps.map((map) => <option key={map.id} value={map.id}>{map.name}{map.active ? " · active" : ""}</option>)}</select>{!selectedMap.active && selectedMap.state.startsWith("ready") ? <Button size="sm" busy={busy} onClick={() => void activateMap(selectedMap)}>Activate</Button> : null}</> : null}>
-            {selectedMap ? <SpatialViewer ref={viewerRef} mode="mapping" projectId={projectId} mapId={selectedMap.id} onMetrics={setViewerMetrics} filters={{ showMap: true, showFrames: true, showPoints: viewMode === "points" }} /> : <div className="viewer-empty"><EmptyState icon="⌖" title="Your point cloud will appear here">Capture at least 20 accepted frames, then build the CPU or CUDA reconstruction.</EmptyState></div>}
+            {selectedMap ? <SpatialViewer ref={viewerRef} mode="mapping" projectId={projectId} mapId={selectedMap.id} onMetrics={setViewerMetrics} filters={{ showMap: true, showFrames: true, showPoints: viewMode === "points" }} /> : <div className="viewer-empty"><EmptyState icon="⌖" title="Your point cloud will appear here">Capture at least 7 accepted frames, then build the CPU or CUDA reconstruction.</EmptyState></div>}
             <div className="viewer-metrics"><span>Map {formatCount(selectedMap?.point_count)} pts</span><span>Visible {formatCount(viewerMetrics?.visiblePoints)} pts</span><span>Tiles {viewerMetrics?.loadedTiles ?? 0}</span><span>{viewerMetrics?.frameTimeMs.toFixed(1) ?? "—"} ms</span></div>
           </Card>
-          <Card title="Frame browser" eyebrow="INCREMENTAL QUALITY" actions={<span className="muted">Click a frame to exclude or restore</span>}>
-            {loading ? <Skeleton lines={3} /> : selectedSet?.frames?.length ? <div className="frame-browser">{selectedSet.frames.map((frame) => <button key={frame.id} className={`frame-thumb ${!frame.included ? "is-excluded" : ""}`} onClick={() => void toggleFrame(frame)} title={frame.included ? "Exclude frame" : "Restore frame"}>{frame.thumbnail_url ? <img src={frame.thumbnail_url} alt={`Capture frame ${frame.sequence}`} /> : <span className="frame-thumb__placeholder">{String(frame.sequence).padStart(3, "0")}</span>}<span className={`quality-dot quality-dot--${frame.quality ?? "good"}`} /><small>{frame.blur_score == null ? "pending" : `blur ${frame.blur_score.toFixed(0)}`}</small></button>)}</div> : <p className="muted">No frames yet. Use Record3D replay/capture or import colour images with matching intrinsics.</p>}
+          <Card title="Frame browser" eyebrow="INCREMENTAL QUALITY" actions={<span className="muted">Click frame to toggle · Click × to delete</span>}>
+            {loading ? <Skeleton lines={3} /> : selectedSet?.frames?.length ? <div className="frame-browser">{selectedSet.frames.map((frame) => <button key={frame.id} className={`frame-thumb ${!frame.included ? "is-excluded" : ""}`} onClick={() => void toggleFrame(frame)} title={frame.included ? "Exclude frame" : "Restore frame"}>{frame.thumbnail_url ? <img src={frame.thumbnail_url} alt={`Capture frame ${frame.sequence}`} /> : <span className="frame-thumb__placeholder">{String(frame.sequence).padStart(3, "0")}</span>}<span className={`quality-dot quality-dot--${frame.quality ?? "good"}`} /><small>{frame.blur_score == null ? "pending" : `blur ${frame.blur_score.toFixed(0)}`}</small><span className="frame-delete" onClick={(e) => void deleteFrame(e, frame)} title="Delete frame">×</span></button>)}</div> : <p className="muted">No frames yet. Use Record3D replay/capture or import colour images with matching intrinsics.</p>}
           </Card>
         </div>
         <aside className="workflow-sidebar">
@@ -183,8 +192,8 @@ export function MappingPage() {
             </Card>
           )}
           <Card title="Capture quality" eyebrow="ADMISSION">
-            <div className="metric-grid"><Metric label="Captured" value={formatCount(selectedSet?.frame_count)} /><Metric label="Accepted" value={formatCount(acceptedFrames)} tone={acceptedFrames >= 20 ? "good" : "warning"} /><Metric label="Excluded" value={formatCount(selectedSet?.excluded_frame_count)} /><Metric label="Coverage" value={selectedSet?.coverage == null ? "—" : `${(selectedSet.coverage * 100).toFixed(0)}%`} /></div>
-            {acceptedFrames < 20 ? <InlineAlert tone="warning" title={`${20 - acceptedFrames} more accepted frames required`}>Map creation requires at least 20; 30 or more with varied viewpoints is recommended.</InlineAlert> : acceptedFrames < 30 ? <InlineAlert tone="warning" title="Usable but lightly covered">You can build now; another {30 - acceptedFrames} varied frames are recommended.</InlineAlert> : <InlineAlert tone="success" title="Frame count ready">Review blur, exposure and coverage before reconstruction.</InlineAlert>}
+            <div className="metric-grid"><Metric label="Captured" value={formatCount(selectedSet?.frame_count)} /><Metric label="Accepted" value={formatCount(acceptedFrames)} tone={acceptedFrames >= 7 ? "good" : "warning"} /><Metric label="Excluded" value={formatCount(selectedSet?.excluded_frame_count)} /><Metric label="Coverage" value={selectedSet?.coverage == null ? "—" : `${(selectedSet.coverage * 100).toFixed(0)}%`} /></div>
+            {acceptedFrames < 7 ? <InlineAlert tone="warning" title={`${7 - acceptedFrames} more accepted frames required`}>Map creation requires at least 7; 15 or more with varied viewpoints is recommended.</InlineAlert> : acceptedFrames < 15 ? <InlineAlert tone="warning" title="Usable but lightly covered">You can build now; another {15 - acceptedFrames} varied frames are recommended.</InlineAlert> : <InlineAlert tone="success" title="Frame count ready">Review blur, exposure and coverage before reconstruction.</InlineAlert>}
           </Card>
           <Card title="Build reference map" eyebrow="DURABLE JOB">
             <Field label="Map name"><TextInput value={mapName} maxLength={80} onChange={(event) => setMapName(event.target.value)} /></Field>

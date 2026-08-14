@@ -144,7 +144,20 @@ async def session_tracking(websocket: WebSocket, project_id: str, session_id: st
                 path = _active_path(session)
                 if command == "paint.point":
                     try:
-                        record = commit_point(container, project_id, session_id, {"command_id": command_id, "frame_id": data.get("frame_id"), "note": "", "low_quality_override_reason": data.get("reason") if data.get("allow_low_quality") else None})
+                        from .websockets import _encode_frame
+                        import numpy as np
+                        save_image = bool(data.get("save_image", False))
+                        image_bytes = None
+                        image_intrinsics = None
+                        if save_image and container.camera.state == "ready":
+                            latest = container.camera.latest_frame
+                            if latest is not None:
+                                rgb = np.frombuffer(latest.rgb, dtype=np.uint8).reshape(latest.height, latest.width, 3)
+                                payload_bytes, _ = _encode_frame(rgb, is_rgb=True, quality=90)
+                                image_bytes = payload_bytes
+                                image_intrinsics = latest.intrinsic_matrix
+                                
+                        record = commit_point(container, project_id, session_id, {"command_id": command_id, "frame_id": data.get("frame_id"), "note": "", "low_quality_override_reason": data.get("reason") if data.get("allow_low_quality") else None, "save_image": save_image}, image_bytes=image_bytes, image_intrinsics=image_intrinsics)
                         await websocket.send_json(_envelope("paint.point_committed", sequence, {"command_id": command_id, "record": record, **_authoritative_snapshot(container, project_id, session_id)}, command_id))
                     except AppError as exc:
                         await websocket.send_json(_envelope("paint.point_rejected", sequence, {"command_id": command_id, "reason": exc.message, "code": exc.code}, command_id))
@@ -188,6 +201,13 @@ async def session_tracking(websocket: WebSocket, project_id: str, session_id: st
                 await asyncio.sleep(0.1)
                 continue
             frame = next_tracking(container, project_id, session_id)
+            # Feed the rolling tip buffer so commit_point can search within a time window
+            if frame.get("probe_state") == "tracked" and isinstance(frame.get("tip_w_m"), list) and len(frame["tip_w_m"]) == 3:
+                container.probe_tip_buffer.append({
+                    "t": time.monotonic_ns(),
+                    "session_id": session_id,
+                    "tip_w_m": list(frame["tip_w_m"]),
+                })
             await websocket.send_json(_envelope("tracking.frame", sequence, frame))
             sequence += 1
             path = _active_path(container.catalog.get_resource(project_id, "session", session_id))

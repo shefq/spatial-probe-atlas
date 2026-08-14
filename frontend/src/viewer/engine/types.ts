@@ -22,6 +22,7 @@ export interface RegistrationView {
   scale?: number;
   residualPoints?: Array<{ from: [number, number, number]; to: [number, number, number]; errorMm: number }>;
   observations?: Array<[number, number, number]>;
+  board_definition?: any;
 }
 
 export interface PaintDataDelta {
@@ -82,6 +83,7 @@ export interface ViewerEngine {
   setMode(mode: ViewerMode): void;
   loadMap(source: PointCloudSource): Promise<void>;
   setRegistration(value: RegistrationView): void;
+  setProbeGeometry(geometry: number[][]): void;
   applyTrackingFrame(value: TrackingViewFrame): void;
   setPaintData(value: PaintDataDelta): void;
   setFilters(value: ViewerFilters): void;

@@ -1,7 +1,11 @@
 # Spatial Probe Atlas — Architecture Specification
 
-**Status:** Proposed v1 architecture  
-**Document version:** 1.0  
+**Status:** As-built v1 architecture and implementation contract
+
+**Document version:** 1.1
+
+**Implementation snapshot:** 2026-08-10 (`446831b`)
+
 **Target:** Windows local-first browser application  
 **API prefix:** `/api/v1`  
 **Architecture:** Modular monolith with supervised local worker processes
@@ -10,9 +14,9 @@
 
 Spatial Probe Atlas is a complete rewrite of the AR tissue/probe-tracking prototype. It builds a point-cloud reference map, connects one Record3D iPhone, calibrates and tracks a five-marker probe, registers the probe and tissue/board frames to the map, paints probe-tip points or paths, and supports local review and export.
 
-The production application is one localhost Python application. FastAPI serves a built React frontend, REST APIs, WebSockets, point-cloud tiles, and exports. SQLite owns durable metadata and lifecycle state; large images, COLMAP/SfM artifacts, point clouds, calibration files, and exports remain as inspectable files. Heavy reconstruction and export work runs in supervised subprocesses so native-library or GPU failures cannot take down the web server.
+The application is one localhost Python application. FastAPI serves a built React frontend, REST APIs, WebSockets, point-cloud tiles, captured images, and exports. SQLite owns durable metadata and lifecycle state; large images, reconstruction artifacts, point clouds, calibration files, and exports remain as inspectable files. Heavy reconstruction, export, legacy import, repair, support-bundle, and data-root migration work runs in supervised subprocesses so native-library or GPU failures cannot take down the web server.
 
-The frontend uses React, TypeScript, Vite, React Router, Zustand, and pure Three.js. One framework-independent `ViewerEngine` owns all 3D logic. React mounts and controls it only through `SpatialViewer`, reused in `mapping`, `registration`, `live`, and `review` modes.
+The frontend uses React, TypeScript, Vite, React Router, Zustand, and pure Three.js. One framework-independent `ViewerEngineV1` owns the 3D scene. React mounts and controls it through `SpatialViewerV1`, reused in `mapping`, `registration`, `live`, and `review` modes. Manual 2D image annotation is handled separately by `ManualAnnotationModal` and is converted into a persisted world-space painted record by the backend.
 
 Record3D is the primary camera and its per-frame intrinsics are authoritative. There is no Record3D camera-calibration workflow. Optional external cameras may import OpenCV JSON/YAML or ROS `camera_info.yaml`, normalized to one internal schema.
 
@@ -32,6 +36,9 @@ V1 intentionally excludes spectrometers, FBG sensors, temperature, classificatio
 8. Persist individual points or sampled paths with quality metrics and timestamps.
 9. Review, filter, annotate, soft-delete, restore, and export sessions.
 10. Display frame count, map point count, project/session size, session duration, processing state, compute mode, and practical resource warnings.
+11. Delete unwanted capture frames before a capture set is frozen for mapping.
+12. Support both standard map registration and an ArUco-board workflow that jointly calibrates the probe/board relationship and can align a published map to the board.
+13. Create a painted point manually from a captured camera image when automatic tracking cannot supply a usable world position.
 
 ### 2.2 Assumptions
 
@@ -39,7 +46,7 @@ V1 intentionally excludes spectrometers, FBG sensors, temperature, classificatio
 - One application instance owns a data root; one camera and one active acquisition owner at a time.
 - Record3D supplies synchronized RGB, depth, and intrinsics. Incomplete frames are rejected or explicitly marked.
 - Metres are authoritative; the UI may display millimetres.
-- SfM begins at arbitrary scale. A validated similarity registration makes the published map metric.
+- RGB SfM begins at arbitrary scale. A validated similarity registration or ArUco map alignment supplies the map-to-world similarity used by the viewer and tracking pipelines.
 - A project has no configured size ceiling. Operations remain constrained by available disk, RAM, VRAM, browser limits, and time; warnings and admission checks expose those constraints.
 - Runtime is offline. Internet is used only for setup/update or explicit model download.
 
@@ -55,6 +62,22 @@ V1 intentionally excludes spectrometers, FBG sensors, temperature, classificatio
 - Projects remain locally inspectable and backup-friendly.
 - Future extension points must not create plugin UI, a generic event bus, or unused abstractions in v1.
 
+### 2.4 As-built status and known limitations
+
+This document describes the current repository, including implemented deviations from the original target design. A statement marked as a current limitation is not a release guarantee.
+
+| Area | Current implementation | Current limitation / release work |
+|---|---|---|
+| Replay mapping | Deterministic depth-assisted worker profile (`depth_assisted_replay_v1`) for automated workflows. | Replay capture currently passes tuple depth data to a byte-buffer-only persistence path; the full replay workflow is not green at this snapshot. |
+| Imported/Record3D CPU mapping | OpenCV SIFT, ratio matching, essential-matrix pose chaining, triangulation, checksum-bound SIFT localization index, PLY, and SPATILE octree publication (`cpu_sift_v1`). | This is not the originally proposed global pycolmap/COLMAP bundle-adjusted CPU reconstruction. |
+| CUDA mapping | ALIKED-n16, LightGlue, pycolmap reconstruction, PLY and SPATILE publication (`cuda_aliked_lightglue_v1`). | Requires the separately verified CUDA dependency/model profile and tagged hardware validation. |
+| Live localization | SIFT/PnP for CPU maps; ALIKED/LightGlue against the saved pycolmap reconstruction for CUDA maps; replay path for deterministic tests. | Quality and latency thresholds require further hardware datasets. |
+| Registration | Standard map registration, ArUco joint calibration, and map-to-ArUco alignment are implemented. | Validation records a derived held-out count; truly disjoint held-out observations are not yet persisted and evaluated. |
+| Session dependencies | Sessions store map, probe-calibration, and registration IDs and revisions. Tracking caches include calibration and registration revisions. | All activation paths do not yet enforce a complete frozen-revision lock for existing sessions. |
+| Probe calibration | Portable calibration, detector tuning, image capture, PnP tests, and ArUco joint workflow are implemented. | Some diagnostic/replay paths use simulated metrics, and physical marker/tip geometry optimization remains hardware-dependent. |
+| Review/export | Paging, filters, replay, notes, manual image annotation, soft delete/restore, CSV/JSON/image exports, checksums, and download are implemented. | Export metadata records a session revision, but an immutable enqueue-time snapshot of every selected record is not yet guaranteed. |
+| Operations | Rotating structured logs, support bundles, repair/reindex, supervised data-root migration, health, diagnostics, and instance locking are implemented. | Clean installer and hardware release certification remain separate release gates. |
+
 ## 3. Technology stack and rationale
 
 | Layer | Decision | Reason |
@@ -67,7 +90,7 @@ V1 intentionally excludes spectrometers, FBG sensors, temperature, classificatio
 | Validation | Pydantic v2, JSON Schema Draft 2020-12 | API and portable-file validation. |
 | Metadata | SQLite WAL, SQLAlchemy 2, Alembic | Durable local transactions and migrations without a database service. |
 | Vision | OpenCV, NumPy, SciPy | Blob detection, PnP, calibration, optimization, transforms. |
-| Mapping | hloc plus pycolmap/COLMAP-compatible pipeline | Learned GPU profile and classical CPU profile. |
+| Mapping | OpenCV SIFT CPU pipeline; ALIKED/LightGlue plus pycolmap CUDA pipeline; deterministic depth-assisted replay | Matches the profiles that are currently shipped and selected by the backend. |
 | GPU | PyTorch CUDA when verified | Optional acceleration with explicit fallback. |
 | Tests | Pytest, Vitest, React Testing Library, Playwright | Unit, API, browser, replay, and hardware coverage. |
 
@@ -77,7 +100,7 @@ V1 intentionally excludes spectrometers, FBG sensors, temperature, classificatio
 - Pin accepted runtime builds and SHA-256 hashes in `tools/runtime-manifest.json`.
 - Lock every Python dependency and hash in `requirements-cpu.lock.txt` and `requirements-cuda.lock.txt`.
 - Commit `package-lock.json`; use `npm ci`; application dependencies use exact versions without `^` or `~`.
-- Pin hloc/LightGlue integrations to releases or commit SHAs and model assets to checksums.
+- Pin ALIKED/LightGlue/pycolmap integrations to exact dependency versions and model assets to checksums.
 - Updates ship as tested application releases, never uncontrolled package upgrades.
 
 ### 3.2 Rejected choices
@@ -196,6 +219,8 @@ App
 
 Page components coordinate layout and application commands. They contain no camera, transform, tracking, or Three.js algorithms.
 
+`LivePaintingPage` and `SessionReviewPage` also mount `ManualAnnotationModal` for records whose captured image is available but whose automatic world position is unresolved. `ProbeRegistrationPage` contains both the standard registration stepper and the ArUco joint-calibration/map-alignment controls.
+
 ### 6.4 `SpatialViewer` wrapper
 
 ```tsx
@@ -294,23 +319,23 @@ Record3D always displays **Intrinsics supplied per frame** and never a calibrati
 
 - **Purpose:** Acquire a quality frame set and publish a point-cloud reference map.
 - **Layout:** `SpatialViewer(mode="mapping")`; live capture strip; coverage/blur indicators; frame-set and reconstruction side panel; durable progress; collapsible frame browser/logs.
-- **Primary actions:** Manual/interval/motion capture, import, exclude/restore frames, create/cancel/resume reconstruction, inspect and activate map.
+- **Primary actions:** Manual/interval/motion capture, import, exclude/restore/delete frames, create/cancel/resume reconstruction, inspect, apply a user transform, align to an observed ArUco board, and activate a map.
 - **States:** Incremental thumbnails and tiles; empty choice between Record3D capture and import; failures retain successful stage artifacts and old active map, with retry/restart/diagnostic actions.
 - **Validation:** Default minimum 20 accepted frames and warning below 30; reject corrupt/duplicate images; require matching per-frame intrinsics; warn on blur, exposure, weak coverage/baseline, disk reserve, and CPU time.
 - **Data:** Captured/accepted/excluded frames, coverage, registered images, points, reprojection error, job duration/stage, map/project bytes, resource estimate, compute profile.
-- **API:** Capture-set/frame endpoints, map job, jobs/events, map metadata/manifest/tiles/activation.
+- **API:** Capture-set/frame endpoints including frame deletion, map job, jobs/events, map transform and ArUco alignment, map metadata/manifest/tiles/activation.
 - **Entry/exit:** Ready camera or valid import → validated map published. Metric registration is still required for Live.
 
 #### 6.8.4 Probe & Registration
 
 - **Purpose:** Establish reusable probe geometry/detection settings and metric map/board/probe/tip relationships.
-- **Layout:** Status cards for active calibration, `5/5 tracked`, calibration error, registration RMS/max residual and scale; live test; calibration capture/upload; `SpatialViewer(mode="registration")`; registration stepper; prominent **Can’t track the probe?** button.
-- **Primary actions:** Test tracking, capture/upload images, create calibration, validate/import/activate/download `probe_calibration.json`, tune blobs, register board/tissue, select correspondences, solve/validate/activate scale and registration.
+- **Layout:** Workflow selector for **Standard Map Mode** or **ArUco Board Mode**; status cards for active calibration, `5/5 tracked`, calibration error, registration RMS/max residual and scale; live test; calibration capture/upload; `SpatialViewer(mode="registration")`; registration stepper; prominent **Can’t track the probe?** button.
+- **Primary actions:** Test tracking, capture/upload images, create calibration, validate/import/activate/download `probe_calibration.json`, tune blobs, register board/tissue, capture joint probe/board observations, solve and activate a joint calibration, align an active map to ArUco, or solve/validate/activate the standard correspondence registration.
 - **States:** Independent map/camera/calibration loading; empty create-or-import choice; failures preserve saved settings, staged import, and correspondences while explaining high residual, degenerate geometry, or scale mismatch.
 - **Validation:** Imported files must pass structural, semantic, unit, transform, five-point geometry, and detector-range checks before replacement. Calibration needs at least 3 valid views and recommends 15–25. Registration requires non-degenerate observations, positive scale, recorded validation, and acceptable residuals or explicit warning acceptance.
 - **Data:** Calibration identity/version/provenance, marker positions, tip transform, all detector settings, source frames/error, blob/inlier counts, probe error, board detections, scale, RMS/max residual, validation observations.
 - **API:** Probe calibration/capture/job/validate/import/download/activate/revision endpoints; tuning and test WebSockets; board and registration endpoints.
-- **Entry/exit:** Active map → active valid probe calibration plus active metric registration marked `passed` or `accepted_with_warning`.
+- **Entry/exit:** Standard mode requires an active map, active valid probe calibration, and active metric registration marked `passed` or `accepted_with_warning`. ArUco Board Mode may establish the board/probe relationship before a map exists; Live then uses board tracking and any available map alignment.
 
 **Advanced blob-detector modal**
 
@@ -324,9 +349,9 @@ Record3D always displays **Intrinsics supplied per frame** and never a calibrati
 
 - **Purpose:** Run a monitored session and persist probe-tip points/paths.
 - **Layout:** Dominant `SpatialViewer(mode="live")`; compact image overlay; session controls/duration; localization, probe, position, paint mode, sampling, and counts panel; recent-event table.
-- **Primary actions:** Start, pause/resume, save point, start/stop path, choose time/distance sampling, undo last item, focus probe, note, stop/finalize.
+- **Primary actions:** Start, pause/resume, save point (including via external API with custom labels/colors), start/stop path, choose time/distance sampling, annotate a captured image manually when a point needs a position, focus probe, note, stop/finalize.
 - **States:** Preflight checklist before Start; unmet-prerequisite empty state; tracking loss auto-pauses painting; camera loss enters degraded/reconnecting; fatal failure preserves committed records and a recoverable session.
-- **Validation:** Samples require localized camera, tracked probe, finite transforms, monotonic timestamp, map bounds, and quality thresholds. Paths deduplicate jitter. Explicit low-quality point override requires a reason.
+- **Validation:** Automatic samples require localized camera, tracked probe, finite transforms, monotonic timestamp, map bounds, and quality thresholds. Points triggered when the probe is not tracked exactly at the click time can fall back to searching a short temporal window of recent frames (e.g., ±0.5s), optionally averaging the positions. Paths deduplicate jitter. A captured image without a resolved position is retained as `needs_annotation`; the operator selects exactly five marker centres, the backend tries their correspondences with calibrated geometry, solves/refines PnP, records reprojection error, and persists the resolved world-space tip.
 - **Data:** Camera/probe/tip overlays, frame/point/path counts, duration/size, FPS/drops, inliers/errors, latency, coordinates, disk/RAM/VRAM warnings.
 - **API:** Session lifecycle/snapshot, tracking WebSocket, paint commands/acks, recent records.
 - **Entry/exit:** Camera, map, calibration, registration, storage, and camera-owner preflight pass → finalized or recoverable stopped session.
@@ -335,7 +360,7 @@ Record3D always displays **Intrinsics supplied per frame** and never a calibrati
 
 - **Purpose:** Inspect, filter, annotate, replay, and export persisted data.
 - **Layout:** `SpatialViewer(mode="review")`; filter/legend and selected-record inspector; timeline and paged table; export drawer.
-- **Primary actions:** Filter time/type/quality, select/replay, annotate, soft-delete/restore, compare, create/cancel/retry/download exports.
+- **Primary actions:** Filter time/type/quality, select/replay, edit notes, annotate unresolved camera images, soft-delete/restore, create/cancel/retry/download exports.
 - **States:** Summary first, paint chunks second, map tiles progressively; valid empty session view; corrupt artifacts are isolated and repair/reindex runs as a non-destructive job.
 - **Validation:** Valid UTC ranges, bounded notes, soft deletion until purge, and exports record schema, frame, units, filters, and checksums.
 - **Data:** Duration/size/frames, tracked/lost ratio, point/path counts, quality distributions, selected coordinates/time/metrics/notes, map points, exports.
@@ -401,24 +426,25 @@ disconnect() -> void
 
 Each SDK callback captures RGB, depth, K, device timestamp, and sequence as one immutable raw frame. The normalizer converts colour encoding, depth to metres, K for the exact resolution, and SDK axes to the canonical camera frame; validates synchronization/finite values; then emits into a latest-frame ring and optional capture queue. Callbacks do not run OpenCV, SfM, JPEG encoding, database writes, or WebSocket sends. Disconnect releases handles once and permits supervised retry without silently switching device.
 
-### 7.5 SfM and point-cloud pipeline
+### 7.5 Mapping and point-cloud pipelines
 
-1. Ingest/checksum/dimension/intrinsics validation; freeze capture revision.
-2. Blur, exposure, duplicate, baseline, and coverage analysis.
-3. Feature extraction: CUDA profile defaults to ALIKED-n16; CPU profile defaults to SIFT.
-4. Pair generation: retrieval or sequence-assisted, bounded exhaustive for small sets.
-5. Matching: LightGlue on CUDA; tested CPU nearest-neighbour/ratio profile on CPU.
-6. pycolmap/COLMAP reconstruction using compatible per-image intrinsic groups.
-7. Validate registered ratio, point count, track length, reprojection error, finite transforms, and connected component.
-8. Export authoritative binary little-endian PLY with XYZ/RGB and metadata/checksums.
-9. Build browser octree tiles and manifest.
-10. Atomically publish; do not change the active map until explicit activation.
+All profiles ingest a frozen capture-set revision, validate frame artifacts and intrinsics, publish an authoritative binary little-endian XYZ/RGB PLY, build the shared deterministic `SPATILE1` octree hierarchy, validate every manifest URI/size/SHA-256, and atomically publish without changing the active map.
 
-CPU fallback is a recorded profile, not an invisible mid-job substitution. CUDA OOM offers a clean CPU retry.
+| Effective profile | Current pipeline | Localization artifact |
+|---|---|---|
+| `depth_assisted_replay_v1` | Deterministic replay-only depth back-projection and pose-assisted fusion used by fixtures and automated workflows. | Replay tracking data. |
+| `cpu_sift_v1` | OpenCV SIFT extraction, bounded candidate pairing, ratio matching, essential-matrix relative pose recovery, chained camera poses, triangulation, finite/error validation, PLY and tiles. | `localization-index.npz` containing checksum-bound SIFT128 descriptors and M0 points. |
+| `cuda_aliked_lightglue_v1` | ALIKED-n16 extraction, LightGlue matching, pycolmap database import and incremental reconstruction, model validation, PLY and tiles. | Saved `sfm/aliked_features.npz` and pycolmap reconstruction consumed by the CUDA live-localization pipeline. |
 
-### 7.6 Probe tracking
+The requested and effective profiles, algorithm name, dependency versions, capture revision, artifact sizes, and checksums are persisted. `auto` chooses CUDA only after capability verification; explicit CUDA failure or OOM does not silently substitute CPU inside the same attempt. The shipped CPU pipeline is intentionally documented as the current implementation, not described as pycolmap/global bundle adjustment.
 
-For each frame: grayscale → active `SimpleBlobDetector` settings → candidate/correspondence search → `solvePnPRansac` → refinement → reject non-finite/behind-camera/low-inlier/high-error/implausible jumps → bounded temporal filtering → compose `T_W_P = T_W_C · T_C_M · T_M_P` → emit transforms, tip, metrics, latency, and state. Exact frame intrinsics are used. Live tuning modifies only a draft until saved.
+### 7.6 Live localization, ArUco, and probe tracking
+
+`TrackingPipelineFactory` selects a localization path from the active map artifacts: checksum-verified SIFT/PnP for CPU maps, ALIKED/LightGlue with the saved pycolmap reconstruction for CUDA maps, or deterministic replay tracking. The runtime cache key includes the session, active calibration revision, registration revision, and localization artifact hash.
+
+For each frame, the probe path applies shared grayscale conversion, active `SimpleBlobDetector` settings (utilizing cached detector instances), candidate/correspondence search accelerated by temporal pose prediction, `solvePnPRansac`, refinement, finite/visibility/inlier/error/jump checks, and bounded temporal filtering. Standard map mode composes `T_W_P = T_W_C · T_C_M · T_M_P`. ArUco Board Mode also detects the configured board and composes through `T_C_B` and the solved board/probe relationship. Exact frame intrinsics are used. Live tuning modifies only an ephemeral draft until a calibration revision is saved.
+
+Tracking frames include camera, board, marker, probe-tip, inlier/error, frame-rate, and latency fields needed by `ViewerEngineV1`. Stale high-rate frames are dropped rather than queued. Simulated/replay diagnostic values must remain identifiable as simulated and must not be treated as hardware validation evidence.
 
 ### 7.7 GPU detection and CPU fallback
 
@@ -460,13 +486,14 @@ Files are written under same-volume `.staging/<job-id>`, flushed, checksummed, v
 | Projects | `GET/POST /projects`; `GET/PATCH /projects/{p}`; `POST /projects/{p}/clone`, `/archive`, `/restore`; `GET /projects/{p}/summary` |
 | Camera | `GET /camera/devices`, `/camera/status`; `POST /camera/connect`, `/camera/disconnect` |
 | External calibration | `POST /projects/{p}/camera-calibrations/validate`, `/import`; `POST .../{id}/activate`; `GET .../{id}` |
-| Capture | `GET/POST /projects/{p}/capture-sets`; `GET .../{c}`; `POST .../{c}/frames:capture`, `/frames:import`; `PATCH .../{c}/frames/{f}` |
-| Maps | `GET/POST /projects/{p}/maps`; `GET .../maps/{m}`; `POST .../{m}/activate`; `GET .../{m}/point-cloud/manifest`, `/tiles/{tile}` |
+| Capture | `GET/POST /projects/{p}/capture-sets`; `GET .../{c}`; `POST .../{c}/frames:capture`, `/frames:import`; `PATCH/DELETE .../{c}/frames/{f}` |
+| Maps | `GET/POST /projects/{p}/maps`; `GET .../maps/{m}`; `POST .../{m}/transform`, `/align-aruco`, `/activate`; `GET .../{m}/point-cloud/manifest`, `/tiles/{tile}` |
 | Probe | `GET /projects/{p}/probe-calibrations`; `GET .../{id}` and `/download`; `POST .../validate`, `/import`, collection create, `/{id}/activate`, `/{id}/revisions`; probe capture endpoints |
-| Registration | `GET/POST /projects/{p}/registrations`; observation add/delete; `POST .../{id}/solve`, `/validate`, `/activate` |
+| Registration | `GET/POST /projects/{p}/registrations`; observation add/delete/clear; `POST .../{id}/solve`, `/validate`, `/activate`; ArUco capture/solve and registration-tracking stream |
 | Sessions | `GET/POST /projects/{p}/sessions`; `GET .../{s}`; `POST .../{s}/start`, `/pause`, `/resume`, `/stop`, `/finalize`; tracking snapshot |
-| Paint/review | Paged `painted-points`/`painted-paths`; item `PATCH/DELETE`; restore commands; replay chunks |
+| Paint/review | Paged `painted-records`, `painted-points` (also serves as external API trigger), and `painted-paths`; item `PATCH/DELETE`; restore; record image; manual `annotate`; replay chunks |
 | Export/jobs | `POST/GET /projects/{p}/sessions/{s}/exports`; download; `GET /jobs/{j}`; `POST /jobs/{j}/cancel`, `/resume` |
+| Operations | Support bundle, integrity repair/reindex, data-root migration, log tail/reveal, and legacy import/report endpoints |
 
 ### 8.3 Request/response examples
 
@@ -498,7 +525,7 @@ Content-Type: application/json
   "map_id": "e339c133-f2c0-4a28-b5be-379bf9e387d8",
   "job_id": "601f6bf5-cad6-4c18-b08d-a93f0a0a627c",
   "state": "queued",
-  "effective_compute_profile": "cuda_aliked_lightglue"
+  "effective_compute_profile": "cuda_aliked_lightglue_v1"
 }
 ```
 
@@ -525,6 +552,7 @@ Import requires this immutable, expiring `validation_id`; only successful import
 | `/ws/v1/camera/preview` | Binary RGB/depth preview and health. |
 | `/ws/v1/projects/{p}/probe-tuning` | Parameter drafts, raw/binary/overlay images, diagnostics. |
 | `/ws/v1/projects/{p}/probe-test` | Tracking test and metrics. |
+| `/ws/v1/projects/{p}/registrations/{r}/tracking` | Live board/probe registration observations and transforms. |
 | `/ws/v1/projects/{p}/sessions/{s}/tracking` | Tracking frames, paint commands/acks, session state. |
 
 JSON envelope:
@@ -596,7 +624,7 @@ All entities have UUID IDs, UTC timestamps, and revisions. Cached sizes/counts i
 | Entity | Core data | Lifecycle |
 |---|---|---|
 | Project | Name, data path, active map/calibration/registration, size | active, archived, quarantined |
-| Session | Immutable map/calibration/registration revision refs, times, counts, size, profile, notes | draft, preflight, running, paused, degraded, stopping, stopped, finalized, failed, recoverable |
+| Session | Captured map/calibration/registration IDs and revisions, times, counts, size, profile, notes | draft, preflight, running, paused, degraded, stopping, stopped, finalized, failed, recoverable |
 | CaptureSet | Source, revision, frames, quality, size | draft, frozen, processing, ready, invalid |
 | CaptureFrame | Sequence/timestamps, RGB/depth/K artifacts, dimensions, checksum, quality, included | Immutable content; revisioned inclusion |
 | SceneMap | Capture revision, algorithm/profile, PLY/tiles, counts/errors/units | building, validating, ready_unscaled, ready_metric, failed, superseded |
@@ -604,14 +632,14 @@ All entities have UUID IDs, UTC timestamps, and revisions. Cached sizes/counts i
 | ProbeCalibration | Geometry, `T_M_P`, full blob settings, quality/provenance/checksum | draft, validating, valid, active, rejected, superseded |
 | Registration | Map/calibration refs, observations, `S_W_M0`, `T_W_B`, scale/residuals | draft, solving, solved, validated, active, rejected, superseded |
 | TrackingFrame | Times, `T_W_C`, `T_C_M`, tip, metrics, latency | Ephemeral; optionally sampled |
-| PaintedPoint | Session/frame/time, `position_w_m`, orientation, metrics, quality, note | committed, flagged_low_quality, deleted |
+| PaintedPoint | Session/frame/time, optional captured image, `position_w_m`, orientation, metrics, quality, note, label, value, color | committed, needs_annotation, flagged_low_quality, deleted |
 | PaintedPath | Sampling policy, ordered chunks, bounds, length, quality, note | recording, committed, interrupted, deleted |
 | ExportJob | Format/filter snapshot, output/checksum/size, job ref | queued, processing, completed, failed, cancelled, expired |
 | Job | Type/owner/spec/stage/progress/checkpoint/PID/attempt/error/times | Section 15 |
 
 Invariants:
 
-- Sessions reference immutable map, calibration, and registration revisions.
+- Sessions capture map, calibration, and registration revisions at creation. Complete enforcement of those frozen revisions across later resource activation is a current release gap listed in Section 2.4.
 - One active revision of each type per project, changed transactionally.
 - Registration is valid only for its exact map revision and cannot activate without finite positive scale and validation.
 - Paint coordinates never change frame. Re-registration creates derived views/exports, not in-place rewrites.
@@ -797,7 +825,7 @@ Compatibility rules:
 3. Crop, non-uniform scale, rotation, unknown binning/ROI, unsupported model, or coefficient mismatch is rejected until the user supplies compatible calibration metadata.
 4. Original upload and normalized JSON are preserved; activation references the normalized checksum.
 
-## 12. Proposed repository structure
+## 12. Repository structure
 
 ```text
 spatial-probe-atlas/
@@ -851,7 +879,7 @@ spatial-probe-atlas/
 │       │   ├── persistence/        # SQLAlchemy repositories
 │       │   └── filesystem/         # Atomic artifact store
 │       ├── pipelines/
-│       │   ├── mapping/            # hloc/pycolmap orchestration
+│       │   ├── mapping/            # replay, OpenCV SIFT, CUDA LightGlue/pycolmap, SPATILE
 │       │   ├── probe/              # Detection, PnP, calibration
 │       │   ├── registration/       # Scale/transforms/validation
 │       │   └── tracking/           # Live localization composition
@@ -883,7 +911,7 @@ spatial-probe-atlas/
 └── dist/                            # Generated release output; not source
 ```
 
-Frontend types are generated from backend OpenAPI and committed/checked for drift. Portable JSON schemas remain language-neutral and are validated by both stacks. Runtime project data never lives under the repository.
+The tree above is the intended module map. The current source keeps several route-level vertical slices in `backend/src/spatial_probe_atlas/api/*_contract.py` and uses `ViewerEngineV1`/`SpatialViewerV1` names while v1 stabilizes. Portable JSON schemas remain language-neutral and are validated by both stacks. Runtime project data never lives under the repository.
 
 ## 13. Coordinate frames and units
 
@@ -907,7 +935,7 @@ Frontend types are generated from backend OpenAPI and committed/checked for drif
 | `B` | Registration-board/tissue frame defined by the ArUco board specification. |
 | `V` | Three.js display frame. A fixed `T_V_W` converts domain axes at the viewer boundary. |
 
-SfM localization produces `T_W_C`; probe PnP produces `T_C_M`; calibration provides `T_M_P`; therefore `T_W_P = T_W_C T_C_M T_M_P`. Board detection produces `T_C_B`; combined observations solve `T_W_B`. The map similarity `S_W_M0` is baked into the published metric point-cloud revision or recorded immutably in its manifest. Three.js display conversion is never written back as domain data.
+Map localization produces `T_W_C`; probe PnP produces `T_C_M`; calibration provides `T_M_P`; therefore standard mode uses `T_W_P = T_W_C T_C_M T_M_P`. Board detection produces `T_C_B`; the ArUco workflow solves the probe/board relationship and map alignment through B. The map similarity `S_W_M0` is recorded at the top level of the active scene-map payload and in the published manifest data consumed by the viewer. Three.js applies the fixed W-to-V display conversion at its boundary and never writes display coordinates back as domain data.
 
 Every stored transform includes source frame, destination frame, units, convention version, and provenance. Automated transform tests use known basis vectors and round-trip tolerances.
 
@@ -1003,7 +1031,7 @@ sequenceDiagram
     participant D as SQLite/Artifacts
     U->>F: Start session
     F->>A: POST session/start
-    A->>A: preflight immutable revisions/resources
+    A->>A: preflight active resources and capture dependency revisions
     A-->>F: running
     F->>A: open tracking WebSocket
     loop Every usable frame
@@ -1129,6 +1157,8 @@ Metrics are local snapshots with bounded retention, not telemetry. Diagnostics s
 
 CI runs CPU tests and deterministic replay. CUDA and Record3D tests run on tagged hardware. Performance baselines record hardware and use regression bands rather than absolute universal FPS promises.
 
+**Verification snapshot, 2026-08-10:** the frontend has 20 passing Vitest tests and a successful production build. The backend non-hardware/non-slow selection has 27 passing, 2 failing, 1 skipped, and 3 deselected tests. Both failures are the replay depth-representation incompatibility described in Section 2.4. The Windows legacy symlink test is skipped when the host lacks symlink privilege. Browser E2E and Record3D/CUDA hardware certification are not considered green for this snapshot. The frontend build reports a non-blocking warning for the approximately 564 kB `SpatialViewerV1` chunk.
+
 ## 20. Migration from the prototype
 
 Migration is an explicit import tool, never shared code or in-place upgrade.
@@ -1145,9 +1175,9 @@ Migration is an explicit import tool, never shared code or in-place upgrade.
 
 No prototype frontend, JS modules, route names, global manager, mutable module constants, directory shape, or process calls are retained. Algorithmic concepts may be reimplemented behind new ports with tests. Known inconsistencies—such as saved `dot_positions` versus code expecting `points_3d`, or blob settings split from calibration—are corrected during normalization, not carried forward.
 
-## 21. Phased implementation plan
+## 21. Implementation phase status
 
-### Phase 1 — MVP foundation and mapping
+### Phase 1 — MVP foundation and mapping (implemented; replay regression open)
 
 - Repository/tooling, setup/run/doctor, schema/lock policy, FastAPI static serving, SQLite migrations.
 - Projects page, data-root lock, capabilities/resources, dark design system.
@@ -1155,9 +1185,9 @@ No prototype frontend, JS modules, route names, global manager, mutable module c
 - Mapping jobs with CPU profile first, authoritative PLY, basic octree tiles.
 - `ViewerEngine` mapping mode and project summaries.
 
-**Exit:** A clean Windows machine can set up, connect Record3D, capture/import frames, build and inspect a point cloud on CPU.
+**Current status:** Setup/run/doctor, projects, data-root lock, migrations, production frontend serving, camera/replay adapters, capture sets, mapping jobs, PLY/SPATILE publication, activation, and the mapping viewer exist. Phase verification is not currently green because replay capture cannot persist tuple depth data.
 
-### Phase 2 — Mapping and registration hardening
+### Phase 2 — Mapping and registration hardening (substantially implemented)
 
 - CUDA profile and model management; job recovery/cancellation.
 - Complete calibration schema/import/download/revisions.
@@ -1165,24 +1195,24 @@ No prototype frontend, JS modules, route names, global manager, mutable module c
 - ArUco/tissue registration, scale solution, residual validation, registration viewer mode.
 - Legacy importer and stronger point-cloud LOD/resource warnings.
 
-**Exit:** A reusable probe calibration and metric registration pass repeatable validation.
+**Current status:** CUDA dispatch, durable recovery/cancellation, portable probe calibration, full blob tuning, probe test/capture, ArUco joint calibration, map alignment, legacy import, and deterministic LOD exist. Disjoint held-out registration validation, final probe-geometry optimization, and tagged hardware evidence remain open.
 
-### Phase 3 — Live tracking and painting
+### Phase 3 — Live tracking and painting (implemented with hardening gaps)
 
 - Reference localization, probe PnP, quality state machine, direct viewer stream.
 - Session preflight/lifecycle/reconnect/recovery.
 - Point/path commands, sampling, persistence, undo, live viewer overlays.
 - Performance instrumentation and recorded-session replay.
 
-**Exit:** A user completes a stable, recoverable live session with persisted map-frame tip points/paths.
+**Current status:** CPU SIFT/PnP, CUDA ALIKED/LightGlue, ArUco board tracking, probe PnP, session lifecycle/recovery, point/path persistence, direct viewer updates, image capture, and manual annotation exist. Frozen dependency revisions are stored but are not yet enforced across every later activation path; hardware quality/latency thresholds remain uncertified.
 
-### Phase 4 — Review and export
+### Phase 4 — Review and export (implemented with reproducibility gap)
 
 - Review filters, paging, selection, replay, annotations, soft delete/restore.
 - JSON/CSV point/path exports, session manifest, checksums, screenshots/point-overlay exports; no mesh/GLB.
 - Support bundle, repair/reindex, backup/restore documentation, full E2E and installer hardening.
 
-**Exit:** Sessions can be reviewed and exported reproducibly by a non-developer.
+**Current status:** Paged review, filters, selection, replay, notes, manual annotation, soft deletion/restoration, export creation/download, checksums, support bundles, and repair/reindex exist. Immutable enqueue-time export record snapshots and full browser/installer verification remain release work.
 
 ### Phase 5 — Future plugin preparation, not v1 UI
 
@@ -1205,11 +1235,14 @@ No prototype frontend, JS modules, route names, global manager, mutable module c
 | Risk/decision | Default/mitigation | Unresolved acceptance criterion |
 |---|---|---|
 | Record3D SDK/USB reliability | Adapter boundary, bounded buffers, explicit device state, replay tests, reconnect | Supported Record3D/Windows/iOS version matrix after HIL testing |
-| CPU mapping time | SIFT CPU profile, estimates, durable background jobs | Maximum acceptable time for reference datasets |
+| CPU mapping accuracy/time | Current OpenCV SIFT/essential-chain profile, estimates, durable background jobs | Replace or validate against the originally targeted global pycolmap/BA pipeline on curated datasets |
 | CUDA dependency matrix | Separate lockfiles, smoke test, checksum models, clean CPU retry | Supported GPU architectures/driver floor per release |
 | Deformable/glossy tissue weakens SfM | Quality guidance, coverage/error metrics, controlled phantom first | Minimum registered ratio/error for “valid” map |
 | Probe marker ambiguity/occlusion | Five-point geometry, RANSAC, diagnostics, no forced identity from size order | Final thresholds and temporal filter after recorded trials |
-| Scale/registration drift | Held-out observations, RMS/max residual, immutable registration revisions | Warning and blocking thresholds per hardware study |
+| Scale/registration drift | RMS/max residual, revisioned registrations, ArUco alignment | Persist and evaluate genuinely disjoint held-out observations; set thresholds per hardware study |
+| Session dependency drift | Session records IDs/revisions and tracking cache keys include calibration/registration revisions | Reject incompatible activation or load the exact frozen artifacts for every active/recoverable session |
+| Export reproducibility | Export stores schema, filters, session revision, checksums, and frozen timestamp | Materialize an immutable enqueue-time record selection before worker execution |
+| Replay depth representation | Normalized frames permit byte-buffer and numeric tuple depth payloads | Normalize both representations in capture persistence and restore the two replay tests |
 | Point-cloud browser limits | Octree LOD, budgets, culling, worker decode, warnings | Default point budget after target-machine profiling |
 | Custom tile format maintenance | Versioned small format, authoritative PLY retained | Adopt established format only if pure-Three implementation stays simple |
 | Per-frame Record3D pose/depth use in mapping | V1 uses RGB/intrinsics for SfM; retain depth/pose as optional provenance | Whether depth seeds scale/alignment after validation |
@@ -1218,7 +1251,7 @@ No prototype frontend, JS modules, route names, global manager, mutable module c
 | Windows paths/storage | Generated IDs, relative manifests, long-path checks, writable-root doctor | Support for network/removable data roots remains off by default |
 | Localhost attack surface | Loopback, Origin/Host checks, one-time bootstrap cookie, CSP | Security review before remote-access feature is considered |
 
-Architectural decisions that must be recorded as ADRs before implementation: final point-tile binary layout, exact Record3D SDK coordinate conversion, board definition/marker dictionary, CPU/GPU algorithm configurations, tracking quality thresholds, and retained telemetry rate.
+Implemented decisions are recorded in `IMPLEMENTATION_NOTES.md`: the `SPATILE1` tile layout, Record3D coordinate conversion, `DICT_4X4_50` board definition, shipped compute profiles, provisional tracking thresholds, and telemetry retention. Changes to these compatibility-sensitive choices require an ADR plus fixture/schema updates.
 
 ## 24. Installation, packaging, and local operation
 

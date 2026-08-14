@@ -133,11 +133,21 @@ def create_capture_set(request: Request, project_id: str, body: CaptureSetCreate
     return request.app.state.container.catalog.create_resource(project_id, "capture_set", state="draft", name=body.name, payload={"source": body.source, "frame_count": 0, "accepted_frame_count": 0, "size_bytes": 0, "quality": {}, "frozen_revision": None})
 
 
+def _enrich_frame(project_id: str, capture_set_id: str, frame: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(frame, dict):
+        return frame
+    item = dict(frame)
+    frame_id = item.get("frame_id") or item.get("id")
+    if frame_id:
+        item["thumbnail_url"] = f"/api/v1/projects/{project_id}/capture-sets/{capture_set_id}/frames/{frame_id}/thumbnail"
+    return item
+
+
 @router.get("/projects/{project_id}/capture-sets/{capture_set_id}")
 def get_capture_set(request: Request, project_id: str, capture_set_id: str) -> dict[str, Any]:
     result = request.app.state.container.catalog.get_resource(project_id, "capture_set", capture_set_id)
     frames = request.app.state.container.catalog.list_resources(project_id, "capture_frame", parent_id=capture_set_id, limit=1000)
-    result["frames"] = frames
+    result["frames"] = [_enrich_frame(project_id, capture_set_id, f) for f in frames]
     return result
 
 
@@ -168,8 +178,8 @@ def _refresh_capture_set(container: Any, project_id: str, capture_set_id: str) -
     accepted = [item for item in frames if item.get("included", True)]
     size = sum(int(item.get("rgb_artifact", {}).get("size_bytes", 0)) + int(item.get("depth_artifact", {}).get("size_bytes", 0)) for item in frames)
     warnings = []
-    if len(accepted) < 30:
-        warnings.append({"code": "FRAME_COUNT_LOW", "message": "30 or more accepted frames are recommended."})
+    if len(accepted) < 15:
+        warnings.append({"code": "FRAME_COUNT_LOW", "message": "15 or more accepted frames are recommended."})
     return container.catalog.update_resource(project_id, "capture_set", capture_set_id, payload_patch={"frame_count": len(frames), "accepted_frame_count": len(accepted), "size_bytes": size, "warnings": warnings})
 
 
@@ -186,7 +196,7 @@ async def capture_frames(request: Request, project_id: str, capture_set_id: str,
     for index in range(body.count):
         frame = await container.camera.wait_for_frame(previous, timeout=2.0)
         previous = frame.sequence
-        depth = np.asarray(frame.depth_m, dtype=np.float32) if frame.depth_m is not None else np.full(frame.width * frame.height, np.nan, dtype=np.float32)
+        depth = np.frombuffer(frame.depth_m, dtype=np.float32) if frame.depth_m is not None else np.full(frame.width * frame.height, np.nan, dtype=np.float32)
         items.append(_persist_frame(container, project_id, capture_set_id, sequence=frame.sequence, timestamp_ns=frame.device_timestamp_ns, width=frame.width, height=frame.height, k=list(frame.intrinsic_matrix), rgb_bytes=frame.rgb, depth_values=depth, source=str(capture_set.get("source", "record3d"))))
         if body.interval_ms and index + 1 < body.count:
             await asyncio.sleep(body.interval_ms / 1000)
@@ -219,7 +229,43 @@ def patch_frame(request: Request, project_id: str, capture_set_id: str, frame_id
         raise AppError("FRAME_NOT_IN_CAPTURE_SET", "The frame does not belong to this capture set.", status_code=404)
     result = request.app.state.container.catalog.update_resource(project_id, "capture_frame", frame_id, payload_patch=body.model_dump())
     _refresh_capture_set(request.app.state.container, project_id, capture_set_id)
-    return result
+    return _enrich_frame(project_id, capture_set_id, result)
+
+
+@router.delete("/projects/{project_id}/capture-sets/{capture_set_id}/frames/{frame_id}", status_code=204)
+def delete_frame(request: Request, project_id: str, capture_set_id: str, frame_id: str) -> None:
+    frame = request.app.state.container.catalog.get_resource(project_id, "capture_frame", frame_id)
+    if frame["parent_id"] != capture_set_id:
+        raise AppError("FRAME_NOT_IN_CAPTURE_SET", "The frame does not belong to this capture set.", status_code=404)
+    request.app.state.container.catalog.delete_resource(project_id, "capture_frame", frame_id)
+    _refresh_capture_set(request.app.state.container, project_id, capture_set_id)
+
+
+@router.get("/projects/{project_id}/capture-sets/{capture_set_id}/frames/{frame_id}/thumbnail")
+def get_frame_thumbnail(request: Request, project_id: str, capture_set_id: str, frame_id: str) -> Response:
+    container = request.app.state.container
+    frame = container.catalog.get_resource(project_id, "capture_frame", frame_id)
+    if frame.get("parent_id") != capture_set_id:
+        raise AppError("FRAME_NOT_IN_CAPTURE_SET", "The frame does not belong to this capture set.", status_code=404)
+    rgb_artifact = frame.get("rgb_artifact")
+    if not rgb_artifact or "relative_uri" not in rgb_artifact:
+        raise AppError("FRAME_IMAGE_NOT_FOUND", "Frame image metadata missing.", status_code=404)
+    rgb_path = container.artifacts.root / rgb_artifact["relative_uri"]
+    if not rgb_path.is_file():
+        raise AppError("FRAME_IMAGE_NOT_FOUND", "Frame image file missing on disk.", status_code=404)
+    width = int(frame.get("width", 640))
+    height = int(frame.get("height", 480))
+    rgb_bytes = rgb_path.read_bytes()
+    try:
+        from PIL import Image
+        import io
+        img = Image.frombytes("RGB", (width, height), rgb_bytes)
+        img.thumbnail((240, 180))
+        buf = io.BytesIO()
+        img.save(buf, format="JPEG", quality=80)
+        return Response(content=buf.getvalue(), media_type="image/jpeg", headers={"Cache-Control": "public, max-age=86400, immutable"})
+    except Exception as exc:
+        raise AppError("FRAME_IMAGE_CORRUPT", f"Failed to encode frame thumbnail: {exc}", status_code=500)
 
 
 @router.get("/projects/{project_id}/maps")
@@ -351,6 +397,116 @@ def _extract_colmap_cameras(container: Any, project_id: str, map_dir: Path, capt
     except Exception:
         return []
 
+
+@router.post("/projects/{project_id}/maps/{map_id}/align-aruco")
+def align_map_to_aruco_endpoint(request: Request, project_id: str, map_id: str, body: dict[str, Any]) -> dict[str, Any]:
+    from spatial_probe_atlas.pipelines.mapping.align import align_map_to_aruco
+    container = request.app.state.container
+    scene_map = container.catalog.get_resource(project_id, "scene_map", map_id)
+    
+    capture_id = body.get("probe_capture_id")
+    if capture_id:
+        frames = container.catalog.list_resources(project_id, "probe_capture_frame", parent_id=capture_id, limit=1000)
+    else:
+        capture_id = scene_map.get("parent_id")
+        frames = container.catalog.list_resources(project_id, "capture_frame", parent_id=capture_id, limit=1000)
+        
+    accepted = [f for f in frames if f.get("state") == "accepted" or f.get("included", True)]
+    if not accepted:
+        raise AppError("CAPTURE_EMPTY", "No accepted frames in the capture.", status_code=422)
+        
+    sfm_dir = container.catalog.artifacts.root / scene_map["sfm"]["relative_uri"]
+    
+    calibrations = []
+    if body.get("probe_capture_id"):
+        calibrations = container.catalog.list_resources(project_id, "probe_calibration", parent_id=capture_id, limit=1)
+    else:
+        active_calib_id = container.catalog.get_project(project_id).get("active_probe_calibration_id")
+        if active_calib_id:
+            calib = container.catalog.get_resource(project_id, "probe_calibration", active_calib_id)
+            if calib:
+                calibrations.append(calib)
+                
+    marker_ids = body.get("marker_ids", [6, 7, 5])
+    if not calibrations:
+        # Fallback to default 3-marker layout with 4 corners per marker
+        marker_size = float(body.get("nominal_marker_size_m", 0.035))
+        spacing = 0.07
+        half = marker_size / 2.0
+        board_dict = {}
+        for index, m_id in enumerate(marker_ids):
+            cx = (index - (len(marker_ids) - 1) / 2.0) * spacing
+            board_dict[m_id] = [
+                [cx - half, half, 0.0],
+                [cx + half, half, 0.0],
+                [cx + half, -half, 0.0],
+                [cx - half, -half, 0.0],
+            ]
+    else:
+        board_dict = calibrations[0]["board"]["layout"]
+        
+    board_layout = {int(k): np.asarray(v, dtype=np.float32) for k, v in board_dict.items()}
+    
+    solution = align_map_to_aruco(
+        artifact_root=container.catalog.artifacts.root,
+        sfm_dir=sfm_dir,
+        frames_metadata=accepted,
+        marker_ids=marker_ids,
+        board_layout=board_layout
+    )
+    
+    # Build board calibration payload definition
+    board_def = {
+        "dictionary": "DICT_4X4_50",
+        "marker_ids": [int(m) for m in marker_ids],
+        "anchor_id": int(marker_ids[1]) if len(marker_ids) > 1 else int(marker_ids[0]),
+        "marker_size_m": float(body.get("nominal_marker_size_m", 0.035)),
+        "layout": {str(k): (v.tolist() if isinstance(v, np.ndarray) else v) for k, v in board_dict.items()}
+    }
+    
+    # Update current active calibration's board data if exists, else create a calibration with board data only
+    active_calib_id = container.catalog.get_project(project_id).get("active_probe_calibration_id")
+    if active_calib_id:
+        container.catalog.update_resource(
+            project_id, "probe_calibration", active_calib_id,
+            payload_patch={"board": board_def}
+        )
+    else:
+        from spatial_probe_atlas.api.calibration_registration import _portable_calibration, _checksum
+        portable = _portable_calibration(
+            "ArUco Board Calibration (SFM)",
+            len(accepted),
+            len(accepted),
+            container.catalog.get_project(project_id).get("name")
+        )
+        portable["board"] = board_def
+        calib_id = portable["calibration_id"]
+        artifact = container.artifacts.atomic_write_json(
+            container.artifacts.project_path(project_id, Path("calibrations/probe") / f"{calib_id}.json"),
+            portable
+        )
+        created = container.catalog.create_resource(
+            project_id, "probe_calibration", state="valid", name=portable["name"],
+            resource_id=calib_id,
+            payload={**portable, "artifact": artifact, "checksum": _checksum(portable)}
+        )
+        container.catalog.activate(project_id, "probe_calibration", created["probe_calibration_id"])
+        
+    rotation_matrix = np.array(solution["rotation"]).reshape(3, 3)
+    from scipy.spatial.transform import Rotation
+    quaternion = Rotation.from_matrix(rotation_matrix).as_quat().tolist()
+    
+    return container.catalog.update_resource(
+        project_id, "scene_map", map_id, 
+        payload_patch={
+            "similarity_s_w_m0": solution,
+            "user_transform": {
+                "position": solution["translation"],
+                "quaternion": quaternion,
+                "scale": solution["scale"]
+            }
+        }
+    )
 
 @router.get("/projects/{project_id}/maps/{map_id}/point-cloud/manifest")
 def map_manifest(request: Request, project_id: str, map_id: str, response: Response) -> Any:
