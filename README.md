@@ -124,7 +124,7 @@ This project integrates and builds upon several exceptional open-source tools an
 ## ⚖️ License & Disclaimer
 
 **License:**  
-This project is licensed under the MIT License - see the `LICENSE` file for details.
+The source code for Spatial Probe Atlas is licensed under the Apache 2.0 License. However, this project integrates several third-party open-source libraries and tools (such as OpenCV, Three.js, and COLMAP), which are distributed under their own respective licenses (e.g., MIT, BSD). Please refer to the documentation of those individual projects for their specific terms.
 
 **Disclaimer:**  
 > [!WARNING]
