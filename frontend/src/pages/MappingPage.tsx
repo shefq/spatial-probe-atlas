@@ -101,6 +101,24 @@ export function MappingPage() {
     } catch (value) { setError(errorMessage(value)); }
     finally { setBusy(false); }
   };
+
+  const toggleCaptureRef = useRef(toggleCapture);
+  toggleCaptureRef.current = toggleCapture;
+
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.code === "Space" || event.key === " ") {
+        const target = event.target as HTMLElement | null;
+        if (target && (["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName) || target.isContentEditable)) {
+          return;
+        }
+        event.preventDefault();
+        void toggleCaptureRef.current();
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, []);
   const importFrames = async (files: FileList | null) => {
     if (!files?.length) return;
     setBusy(true);

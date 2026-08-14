@@ -7,6 +7,7 @@ import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { TransformControls } from "three/addons/controls/TransformControls.js";
 import { MTLLoader } from "three/addons/loaders/MTLLoader.js";
 import { OBJLoader } from "three/addons/loaders/OBJLoader.js";
+import { PLYLoader } from "three/addons/loaders/PLYLoader.js";
 import type { PaintedPath, PaintedPoint, TrackingViewFrame } from "../../api/types";
 import { decodeV1Tile, normalizeManifest, selectV1Tiles } from "../point-cloud/v1";
 import type { CameraItem, MapTransformData, PaintDataDelta, PointCloudSource, RegistrationView, TransformMode, ViewerEngine as Contract, ViewerFilters, ViewerMetrics, ViewerMode, ViewerOptions, ViewerSelection } from "./types";
@@ -159,8 +160,7 @@ export class ViewerEngine implements Contract {
         this.prevScale.copy(this.transformPivot.scale);
       }
     });
-    this.transformPivot.add(this.map);
-    this.map.add(this.camerasGroup, this.objMesh);
+    this.transformPivot.add(this.map, this.camerasGroup, this.objMesh);
     this.scene.add(this.transformPivot, this.registration, this.tracking, this.paint, this.helpers, this.transformControls.getHelper(), new AmbientLight(0xa7b9cd, 1.3), new DirectionalLight(0xffffff, 1.7));
     const grid = new GridHelper(10, 50, 0x29415a, 0x162332); grid.material.opacity = .42; grid.material.transparent = true;
     const worldAxes = createLabeledAxes(0.15);
@@ -616,37 +616,53 @@ export class ViewerEngine implements Contract {
     
     // Clean up existing mesh
     disposeGroup(this.objMesh);
+    if (!this.objMesh.parent && this.transformPivot) {
+      this.transformPivot.add(this.objMesh);
+    }
     
     try {
-      const mtlLoader = new MTLLoader();
-      mtlLoader.setPath(basePath);
-      const materials = await mtlLoader.loadAsync("model_dense_texture.mtl");
-      materials.preload();
-      
+      // 1. Try loading 100% full-color PLY mesh first
+      const plyLoader = new PLYLoader();
+      try {
+        const geometry = await plyLoader.loadAsync(basePath + "colored_mesh.ply");
+        geometry.computeVertexNormals();
+        const material = new MeshBasicMaterial({
+          vertexColors: true,
+          side: DoubleSide,
+        });
+        const mesh = new Mesh(geometry, material);
+        this.objMesh.add(mesh);
+        this.objMesh.visible = true;
+        this.transformPivot.updateMatrixWorld(true);
+        this.frameObject(this.objMesh);
+        return;
+      } catch {
+        // colored_mesh.ply not found, fall back to OBJ
+      }
+
+      // 2. Fallback to OBJ
+      const { TextureLoader } = await import("three");
+      const atlasTexture = await new TextureLoader().loadAsync(basePath + "model_dense_texture_material_00_map_Kd.jpg");
+      atlasTexture.flipY = false;
+      atlasTexture.colorSpace = SRGBColorSpace;
+
       const objLoader = new OBJLoader();
-      objLoader.setMaterials(materials);
       objLoader.setPath(basePath);
       const object = await objLoader.loadAsync("model_dense_texture.obj");
-      
+
       object.traverse((child) => {
         if ((child as Mesh).isMesh) {
-          const m = (child as Mesh).material;
-          const fixMat = (mat: any) => {
-            mat.side = DoubleSide;
-            mat.opacity = 1.0;
-            mat.transparent = false;
-            mat.needsUpdate = true;
-          };
-          if (Array.isArray(m)) {
-            m.forEach(fixMat);
-          } else if (m) {
-            fixMat(m);
-          }
+          const basicMat = new MeshBasicMaterial({
+            map: atlasTexture,
+            side: DoubleSide,
+          });
+          (child as Mesh).material = basicMat;
         }
       });
       
       this.objMesh.add(object);
-      this.map.updateMatrixWorld(true);
+      this.objMesh.visible = true;
+      this.transformPivot.updateMatrixWorld(true);
       this.frameObject(this.objMesh);
     } catch (err) {
       console.error("Failed to load mesh:", err);
@@ -654,9 +670,15 @@ export class ViewerEngine implements Contract {
   }
 
   setMeshVisibility(visible: boolean): void {
+    if (!this.objMesh.parent && this.transformPivot) {
+      this.transformPivot.add(this.objMesh);
+    }
     this.objMesh.visible = visible;
     if (visible) {
-      this.map.updateMatrixWorld(true);
+      this.transformPivot.updateMatrixWorld(true);
+      if (this.objMesh.children.length > 0) {
+        this.frameObject(this.objMesh);
+      }
     }
   }
 
