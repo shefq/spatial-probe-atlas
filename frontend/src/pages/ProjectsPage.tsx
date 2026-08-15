@@ -101,7 +101,10 @@ export function ProjectsPage() {
   return (
     <main className="page page--projects">
       <header className="page-heading page-heading--wide">
-        <div className="page-heading__actions"><Button onClick={() => setLegacyOpen(true)}>Import legacy project</Button></div>
+        <div className="page-heading__actions">
+          <Button onClick={() => setLegacyOpen(true)}>Import legacy project</Button>
+          <Button onClick={() => navigate("/probe-designer")} title="Design probe fixture & generate Blender script">📐 Probe Designer</Button>
+        </div>
         <div><div className="eyebrow">LOCAL WORKSPACE</div><h1>Projects & Sessions</h1><p>Create a spatial reference, resume acquisition, or inspect a completed session.</p></div>
         <div className="page-heading__actions"><Button variant="primary" onClick={() => setNewOpen(true)}>＋ New project</Button></div>
       </header>

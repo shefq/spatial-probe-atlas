@@ -47,7 +47,12 @@ export function RootLayout() {
           <StatusBadge state={capabilities?.compute_state} label={capabilities?.effective_compute_profile ?? "Compute unknown"} />
           <ResourceStatus compact />
         </div>
-        <NavLink to="/settings" className={({ isActive }) => `icon-link ${isActive ? "is-active" : ""}`} aria-label="Settings and diagnostics">⚙</NavLink>
+        <div className="app-topbar__actions">
+          <NavLink to="/probe-designer" className={({ isActive }) => `topbar-action-link ${isActive ? "is-active" : ""}`} title="Polaris Probe CAD & Blender Script Generator">
+            <span aria-hidden="true">📐</span> Probe Designer
+          </NavLink>
+          <NavLink to="/settings" className={({ isActive }) => `icon-link ${isActive ? "is-active" : ""}`} aria-label="Settings and diagnostics" title="Settings & Diagnostics">⚙</NavLink>
+        </div>
       </header>
       <GlobalErrorBoundary><Outlet /></GlobalErrorBoundary>
       <ToastViewport />

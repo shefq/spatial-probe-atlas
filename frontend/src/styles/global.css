@@ -348,3 +348,77 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
 }
+.topbar-action-link { display: inline-flex; align-items: center; gap: .35rem; padding: .3rem .6rem; border: 1px solid var(--line); border-radius: 6px; background: rgba(21, 38, 50, 0.6); color: var(--text-soft); font-size: .68rem; font-weight: 500; text-decoration: none; transition: border-color .15s ease, background-color .15s ease, color .15s ease; }
+.topbar-action-link:hover, .topbar-action-link.is-active { border-color: var(--cyan); background: rgba(97, 226, 177, 0.12); color: var(--cyan); }
+.app-topbar__actions { display: flex; align-items: center; gap: .55rem; }
+
+/* ==========================================================================
+   PROBE CAD DESIGNER & BLENDER GENERATOR STUDIO
+   ========================================================================== */
+.page--probe-designer { max-width: 1600px; margin: 0 auto; width: 100%; }
+.probe-designer-studio { display: flex; flex-direction: column; gap: 1rem; width: 100%; }
+.probe-designer-header { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: flex-end; gap: 1rem; padding: 1rem 1.25rem; border: 1px solid var(--line); border-radius: 8px; background: linear-gradient(135deg, rgba(16, 32, 44, 0.85), rgba(8, 14, 20, 0.95)); backdrop-filter: blur(10px); }
+.probe-designer-identity { flex: 1; min-width: 320px; }
+.probe-id-row { display: grid; grid-template-columns: minmax(220px, 1fr) minmax(260px, 1.5fr); gap: 1rem; }
+.input-with-action { display: flex; gap: .4rem; }
+.input-with-action .input { flex: 1; }
+.probe-designer-presets { display: flex; align-items: center; gap: .6rem; flex-wrap: wrap; }
+
+.probe-designer-grid { display: grid; grid-template-columns: 460px minmax(0, 1fr); gap: 1rem; align-items: stretch; min-height: 720px; }
+.probe-params-sidebar { display: flex; flex-direction: column; border: 1px solid var(--line); border-radius: 8px; background: rgba(10, 17, 24, 0.9); overflow: hidden; height: 100%; max-height: 820px; }
+.probe-params-tabs { display: grid; grid-template-columns: repeat(4, 1fr); border-bottom: 1px solid var(--line); background: #060b10; }
+.probe-tab-button { padding: .75rem .4rem; border: none; border-bottom: 2px solid transparent; background: transparent; color: var(--muted); font-size: .68rem; font-weight: 600; cursor: pointer; text-align: center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; transition: all .15s ease; }
+.probe-tab-button:hover { color: var(--text-soft); background: rgba(255, 255, 255, 0.03); }
+.probe-tab-button.is-active { color: var(--cyan); border-bottom-color: var(--cyan); background: rgba(97, 226, 177, 0.08); }
+.probe-params-body { flex: 1; overflow-y: auto; padding: 1rem; display: flex; flex-direction: column; gap: .9rem; }
+.probe-params-footer { display: flex; justify-content: flex-end; padding: .65rem 1rem; border-top: 1px solid var(--line); background: #060b10; }
+
+.form-grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: .7rem; }
+.dots-coord-list { display: flex; flex-direction: column; gap: .55rem; }
+.dot-coord-card { padding: .6rem; border: 1px solid var(--line); border-radius: 6px; background: rgba(16, 26, 36, 0.7); }
+.dot-coord-header { display: flex; align-items: center; gap: .45rem; margin-bottom: .45rem; font-size: .72rem; }
+.dot-badge { display: inline-flex; align-items: center; justify-content: center; width: 18px; height: 18px; border-radius: 50%; background: var(--cyan); color: #000; font-size: .62rem; font-weight: bold; }
+.dot-coord-inputs { display: grid; grid-template-columns: repeat(3, 1fr); gap: .4rem; }
+.dot-coord-inputs label { display: flex; flex-direction: column; gap: .2rem; font-size: .62rem; color: var(--muted); }
+.dot-coord-inputs .input { padding: .25rem .4rem; font-size: .7rem; }
+
+.metric-strip { display: grid; grid-template-columns: 1fr 1fr; gap: .6rem; margin-top: .6rem; padding-top: .6rem; border-top: 1px solid var(--line); }
+.step-list { margin: 0; padding-left: 1.2rem; font-size: .72rem; line-height: 1.5; color: var(--text-soft); }
+.step-list li { margin-bottom: .4rem; }
+.toggle-stack { display: flex; flex-direction: column; gap: .6rem; margin-top: .6rem; }
+
+/* Viewport Panel & Canvas */
+.probe-viewport-panel { display: flex; flex-direction: column; border: 1px solid var(--line); border-radius: 8px; background: #080e14; overflow: hidden; height: 100%; min-height: 720px; }
+.probe-viewport-toolbar { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: .6rem; padding: .65rem 1rem; border-bottom: 1px solid var(--line); background: #0b141d; }
+.probe-viewport-actions { display: flex; align-items: center; gap: .4rem; flex-wrap: wrap; }
+.probe-viewport-content { flex: 1; position: relative; min-height: 600px; display: flex; flex-direction: column; }
+
+.probe-3d-wrapper { position: absolute; inset: 0; width: 100%; height: 100%; display: flex; flex-direction: column; }
+.probe-canvas-container { position: relative; width: 100%; height: 100%; flex: 1; }
+.probe-canvas-viewport { width: 100%; height: 100%; display: block; outline: none; }
+.probe-canvas-controls { position: absolute; top: .75rem; left: .75rem; z-index: 10; }
+.probe-canvas-badge { position: absolute; top: .75rem; right: .75rem; z-index: 10; display: inline-flex; align-items: center; gap: .45rem; padding: .35rem .7rem; border: 1px solid var(--line); border-radius: 20px; background: rgba(10, 17, 24, 0.85); backdrop-filter: blur(8px); font-size: .65rem; color: var(--cyan); font-weight: 500; }
+
+.probe-viewport-overlay { position: absolute; bottom: .75rem; left: .75rem; right: .75rem; display: flex; justify-content: center; z-index: 10; pointer-events: none; }
+.overlay-pill { display: flex; align-items: center; gap: .8rem; padding: .4rem .9rem; border: 1px solid var(--line); border-radius: 20px; background: rgba(10, 17, 24, 0.85); backdrop-filter: blur(8px); pointer-events: auto; }
+.overlay-pill label { display: flex; align-items: center; gap: .3rem; font-size: .68rem; color: var(--text-soft); cursor: pointer; user-select: none; }
+.overlay-pill input[type="checkbox"] { accent-color: var(--cyan); cursor: pointer; }
+
+/* Code & JSON Preview Pane */
+.probe-code-view { flex: 1; display: flex; flex-direction: column; overflow: hidden; height: 100%; background: #060b10; }
+.code-view-banner { display: flex; justify-content: space-between; align-items: center; gap: 1rem; padding: .65rem 1rem; border-bottom: 1px solid var(--line); background: rgba(16, 26, 36, 0.6); font-size: .72rem; color: var(--muted); }
+.code-block { flex: 1; margin: 0; padding: 1.25rem; overflow: auto; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; font-size: .75rem; line-height: 1.45; color: #a9c7df; background: #060b10; }
+.font-mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace; }
+
+@media (max-width: 1100px) {
+  .probe-designer-grid { grid-template-columns: 1fr; }
+  .probe-params-sidebar { max-height: 520px; }
+  .probe-viewport-panel { min-height: 540px; }
+}
+
+@media (max-width: 700px) {
+  .probe-id-row { grid-template-columns: 1fr; }
+  .probe-params-tabs { grid-template-columns: repeat(2, 1fr); }
+  .probe-viewport-actions { width: 100%; justify-content: stretch; }
+  .probe-viewport-actions .button { flex: 1; }
+}

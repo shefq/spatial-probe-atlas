@@ -10,11 +10,13 @@ const ProbeRegistrationPage = lazy(() => import("../pages/ProbeRegistrationPage"
 const LivePaintingPage = lazy(() => import("../pages/LivePaintingPage").then((value) => ({ default: value.LivePaintingPage })));
 const SessionReviewPage = lazy(() => import("../pages/SessionReviewPage").then((value) => ({ default: value.SessionReviewPage })));
 const SettingsDiagnosticsPage = lazy(() => import("../pages/SettingsDiagnosticsPage").then((value) => ({ default: value.SettingsDiagnosticsPage })));
+const ProbeDesignerPage = lazy(() => import("../pages/ProbeDesignerPage").then((value) => ({ default: value.ProbeDesignerPage })));
 
 const page = (element: React.ReactNode) => <Suspense fallback={<main className="project-loading"><Skeleton lines={7} /></main>}>{element}</Suspense>;
 const router = createBrowserRouter([{ element: <RootLayout />, children: [
   { index: true, element: <Navigate to="/projects" replace /> },
   { path: "projects", element: page(<ProjectsPage />) },
+  { path: "probe-designer", element: page(<ProbeDesignerPage />) },
   { path: "projects/:projectId", element: <ProjectLayout />, children: [
     { index: true, element: <Navigate to="camera" replace /> },
     { path: "camera", element: page(<CameraSetupPage />) },
