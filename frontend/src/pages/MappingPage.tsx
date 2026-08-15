@@ -36,10 +36,11 @@ export function MappingPage() {
   const [computeProfile, setComputeProfile] = useState("auto");
   const [viewerMetrics, setViewerMetrics] = useState<ViewerMetrics | null>(null);
   const [showCameraPreview, setShowCameraPreview] = useState(true);
-  const [viewMode, setViewMode] = useState<"points" | "mesh">("points");
   const intervalRef = useRef<number | null>(null);
   const viewerRef = useRef<SpatialViewerHandle>(null);
   const cameraStatus = useCameraStore((state) => state.status);
+  const viewMode = useUiStore((state) => state.viewMode);
+  const setViewMode = useUiStore((state) => state.setViewMode);
 
   const refresh = async (signal?: AbortSignal) => {
     setLoading(true); setError(null);
@@ -168,16 +169,6 @@ export function MappingPage() {
   const acceptedFrames = selectedSet?.accepted_frame_count ?? 0;
   const canBuild = acceptedFrames >= 7 && !activeJob;
 
-  useEffect(() => {
-    if (!viewerRef.current || !selectedMapId || !projectId) return;
-    if (viewMode === "mesh") {
-      viewerRef.current.loadMesh(projectId, selectedMapId).catch(console.error);
-      viewerRef.current.setMeshVisibility(true);
-    } else {
-      viewerRef.current.setMeshVisibility(false);
-    }
-  }, [viewMode, projectId, selectedMapId]);
-
   return (
     <div className="page page--workflow">
       <header className="page-heading"><div><div className="eyebrow">STEP 2 · REFERENCE SPACE</div><h1>Scene Capture & Mapping</h1><p>Acquire a well-covered frame set, build a durable SfM map, then inspect and activate it.</p></div><div className="page-heading__actions">{selectedMap?.active ? <Button variant="primary" onClick={() => navigate(`/projects/${projectId}/registration`)}>Continue to registration →</Button> : null}</div></header>
@@ -191,8 +182,8 @@ export function MappingPage() {
       </div>
       <div className="workflow-grid workflow-grid--mapping">
         <div className="mapping-main">
-          <Card className="viewer-card" title="Spatial map inspection" eyebrow={selectedMap ? `${selectedMap.name} · ${selectedMap.state}` : "NO MAP SELECTED"} actions={selectedMap ? <><Segmented label="View mode" value={viewMode} options={[{ value: "points", label: "Points" }, { value: "mesh", label: "Mesh" }]} onChange={(v) => setViewMode(v as any)} /><select className="select select--compact" value={selectedMapId} onChange={(event) => setSelectedMapId(event.target.value)}>{maps.map((map) => <option key={map.id} value={map.id}>{map.name}{map.active ? " · active" : ""}</option>)}</select>{!selectedMap.active && selectedMap.state.startsWith("ready") ? <Button size="sm" busy={busy} onClick={() => void activateMap(selectedMap)}>Activate</Button> : null}</> : null}>
-            {selectedMap ? <SpatialViewer ref={viewerRef} mode="mapping" projectId={projectId} mapId={selectedMap.id} onMetrics={setViewerMetrics} filters={{ showMap: true, showFrames: true, showPoints: viewMode === "points" }} /> : <div className="viewer-empty"><EmptyState icon="⌖" title="Your point cloud will appear here">Capture at least 7 accepted frames, then build the CPU or CUDA reconstruction.</EmptyState></div>}
+          <Card className="viewer-card" title="Spatial map inspection" eyebrow={selectedMap ? `${selectedMap.name} · ${selectedMap.state}` : "NO MAP SELECTED"} actions={selectedMap ? <><Segmented label="View mode" value={viewMode} options={[{ value: "points", label: "Points" }, { value: "mesh", label: "Mesh" }]} onChange={(v) => setViewMode(v as "points" | "mesh")} /><select className="select select--compact" value={selectedMapId} onChange={(event) => setSelectedMapId(event.target.value)}>{maps.map((map) => <option key={map.id} value={map.id}>{map.name}{map.active ? " · active" : ""}</option>)}</select>{!selectedMap.active && selectedMap.state.startsWith("ready") ? <Button size="sm" busy={busy} onClick={() => void activateMap(selectedMap)}>Activate</Button> : null}</> : null}>
+            {selectedMap ? <SpatialViewer ref={viewerRef} mode="mapping" projectId={projectId} mapId={selectedMap.id} onMetrics={setViewerMetrics} filters={{ showMap: true, showFrames: true }} /> : <div className="viewer-empty"><EmptyState icon="⌖" title="Your point cloud will appear here">Capture at least 7 accepted frames, then build the CPU or CUDA reconstruction.</EmptyState></div>}
             <div className="viewer-metrics"><span>Map {formatCount(selectedMap?.point_count)} pts</span><span>Visible {formatCount(viewerMetrics?.visiblePoints)} pts</span><span>Tiles {viewerMetrics?.loadedTiles ?? 0}</span><span>{viewerMetrics?.frameTimeMs.toFixed(1) ?? "—"} ms</span></div>
           </Card>
           <Card title="Frame browser" eyebrow="INCREMENTAL QUALITY" actions={<span className="muted">Click frame to toggle · Click × to delete</span>}>

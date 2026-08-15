@@ -11,7 +11,7 @@
 
 It acts as an AR localization system that bridges physical tools (such as fiber-optic sensor probes) with a digitized 3D coordinate system. 
 
-*(Note: V1 intentionally does not include integrated spectrometers, FBG sensors, temperature logging, classification/diagnosis models, meshes/GLB, Gaussian splatting, cloud accounts, or a plugin runtime).*
+*(Note: V1 intentionally does not include integrated spectrometers, FBG sensors, temperature logging, classification/diagnosis models, GLB, Gaussian splatting, cloud accounts, or a plugin runtime. It does support generating and viewing 100% full-color 3D meshes).*
 
 ---
 
@@ -19,10 +19,23 @@ It acts as an AR localization system that bridges physical tools (such as fiber-
 
 * **Real-time 3D Mapping (SfM):** Captures RGB-D data via a Record3D iPhone client and reconstructs dense 3D point-cloud reference maps.
 * **Live Camera & Probe Tracking:** Utilizes highly optimized ArUco tracking, temporal pose prediction, and configurable blob detection to continuously track the camera and physical 5-marker probe at low latency.
+* **Integrated Probe Fixture Generator:** A built-in 3D visual designer (`Probe Designer Studio`) that allows you to parametrically design custom 5-marker EPnP rigid body probes, generating 3D-printable geometry (via a Blender Python script) and its corresponding `calibration.json`.
 * **Spatial Registration:** Accurately calculates the exact 3D coordinates of the probe's invisible tip relative to the point-cloud map.
 * **Temporal Window Fallback:** Ensures accurate data capture by automatically searching a short temporal window of recent frames (e.g., ±0.5s) if the probe is temporarily occluded or not tracked at the exact moment of a click.
 * **External Integration API:** Allows external physical devices (e.g., Python scripts controlling fiber-optic hardware) to trigger spatial point captures with custom measurements (`label`, `value`, `color`) via a REST API.
-* **Hardware Accelerated:** Supports both deterministic CPU-based extraction (OpenCV SIFT) and optional CUDA-accelerated mapping (ALIKED/LightGlue with pycolmap).
+* **Hardware Accelerated:** Supports both deterministic CPU-based extraction (OpenCV SIFT) and optional CUDA-accelerated mapping (ALIKED/LightGlue with pycolmap and OpenMVS).
+
+---
+
+## 🔧 Custom Probe Fixture Generator
+
+Spatial Probe Atlas includes a built-in parametric 3D designer (**Probe Designer Studio**) to help you easily design and fabricate custom rigid body probes for tracking. 
+
+**How to use it:**
+1. **Design:** Navigate to the Probe Designer within the application UI. Parametrically adjust the geometry (shaft length, 5-dot constellation coordinates, arm tapers, etc.) while viewing an interactive real-time 3D preview. Follow the built-in EPnP guide to ensure optimal tracking robustness (e.g., using asymmetric, non-coplanar marker placement).
+2. **Export Geometry:** Click **Download .py** to get a Blender Python script. Open Blender, run the script, and it will automatically generate a manifold, 3D-printable `.stl` file of your probe.
+3. **Export Calibration:** Click **Export JSON** to download the `calibration.json` file. Import this file directly into the Spatial Probe Atlas calibration manager.
+4. **Fabricate & Track:** 3D print the probe, apply tracking markers to the generated flat plates, and insert your metal shaft. The system will track it out-of-the-box without requiring manual tip-calibration!
 
 ---
 

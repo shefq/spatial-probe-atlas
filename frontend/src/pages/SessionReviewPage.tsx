@@ -34,6 +34,8 @@ export function SessionReviewPage() {
   const resetReview = useReviewStore((state) => state.reset);
   const units = useUiStore((state) => state.displayUnits);
   const pushToast = useUiStore((state) => state.pushToast);
+  const viewMode = useUiStore((state) => state.viewMode);
+  const setViewMode = useUiStore((state) => state.setViewMode);
   const [session, setSession] = useState<SessionSnapshot | null>(null);
   const [exports, setExports] = useState<ExportSnapshot[]>([]);
   const [loading, setLoading] = useState(true);
@@ -161,7 +163,7 @@ export function SessionReviewPage() {
           {compareIds.length === 2 ? <CompareCard records={records.filter((record) => compareIds.includes(record.id))} units={units} /> : null}
         </aside>
         <div className="review-main">
-          <Card className="viewer-card review-viewer-card" title="Session atlas" eyebrow="PROGRESSIVE POINT CLOUD + PAINT" actions={<span className="muted">World frame W · stored in metres</span>}>
+          <Card className="viewer-card review-viewer-card" title="Session atlas" eyebrow="PROGRESSIVE POINT CLOUD + PAINT" actions={<><Segmented label="View mode" value={viewMode} options={[{ value: "points", label: "Points" }, { value: "mesh", label: "Mesh" }]} onChange={(v) => setViewMode(v as "points" | "mesh")} /><span className="muted">World frame W · stored in metres</span></>}>
             {session.map_id ? <SpatialViewer mode="review" projectId={projectId} mapId={session.map_id} sessionId={sessionId} paintData={{ reset: true, upsert: visibleAtReplay }} filters={{ includeDeleted: filters.include_deleted, quality: filters.quality, showPoints: filters.type !== "path", showPaths: filters.type !== "point" }} selection={selected ? { kind: selected.type, id: selected.id, position: selected.type === "point" ? selected.position_w_m : selected.positions_w_m[0] } : { kind: "none" }} /> : <EmptyState title="Map revision unavailable">The paint table remains reviewable. Use repair/reindex diagnostics to relink the immutable session map artifact.</EmptyState>}
           </Card>
           <Card title="Timeline replay" eyebrow={replayPlaying ? "PLAYING" : "PAUSED"}><div className="timeline"><Button size="sm" onClick={() => setReplay(replayTime, !replayPlaying)}>{replayPlaying ? "Ⅱ" : "▶"}</Button><input type="range" min={0} max={session.duration_seconds ?? 0} step={0.1} value={replayTime} onChange={(event) => setReplay(Number(event.target.value), false)} aria-label="Replay time" /><span>{formatDuration(replayTime)} / {formatDuration(session.duration_seconds)}</span></div></Card>

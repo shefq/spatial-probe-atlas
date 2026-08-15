@@ -20,7 +20,7 @@ The frontend uses React, TypeScript, Vite, React Router, Zustand, and pure Three
 
 Record3D is the primary camera and its per-frame intrinsics are authoritative. There is no Record3D camera-calibration workflow. Optional external cameras may import OpenCV JSON/YAML or ROS `camera_info.yaml`, normalized to one internal schema.
 
-V1 intentionally excludes spectrometers, FBG sensors, temperature, classification, meshes, GLB, Gaussian splatting, cloud accounts, and multi-user operation.
+V1 intentionally excludes spectrometers, FBG sensors, temperature, classification, Gaussian splatting, cloud accounts, and multi-user operation. However, it does support generating and viewing 100% full-color 3D meshes using direct camera vertex projection.
 
 ## 2. Product scope, assumptions, and design principles
 
@@ -265,7 +265,7 @@ The engine is the single owner of:
 - 3D transform graph, raycasting, selection, nearest-point queries, and interaction controllers.
 - Geometries, materials, textures, workers, animation frames, controls, listeners, abort controllers, and deterministic disposal.
 
-Only `ViewerEngine` mutates Three.js transforms or GPU buffers.
+Only `ViewerEngine` mutates Three.js transforms or GPU buffers. The viewer supports loading full-color PLY meshes (`colored_mesh.ply`) using vertex colors, directly attached to the scene's transform pivot to ensure stability when the point cloud map is toggled or cleared.
 
 ### 6.6 Viewer modes
 
@@ -434,7 +434,7 @@ All profiles ingest a frozen capture-set revision, validate frame artifacts and 
 |---|---|---|
 | `depth_assisted_replay_v1` | Deterministic replay-only depth back-projection and pose-assisted fusion used by fixtures and automated workflows. | Replay tracking data. |
 | `cpu_sift_v1` | OpenCV SIFT extraction, bounded candidate pairing, ratio matching, essential-matrix relative pose recovery, chained camera poses, triangulation, finite/error validation, PLY and tiles. | `localization-index.npz` containing checksum-bound SIFT128 descriptors and M0 points. |
-| `cuda_aliked_lightglue_v1` | ALIKED-n16 extraction, LightGlue matching, pycolmap database import and incremental reconstruction, model validation, PLY and tiles. | Saved `sfm/aliked_features.npz` and pycolmap reconstruction consumed by the CUDA live-localization pipeline. |
+| `cuda_aliked_lightglue_v1` | ALIKED-n16 extraction, LightGlue matching, pycolmap database import and incremental reconstruction, OpenMVS dense reconstruction and direct camera-to-vertex projection for 100% full-color PLY mesh (`colored_mesh.ply`), model validation, and tiles. | Saved `sfm/aliked_features.npz` and pycolmap reconstruction consumed by the CUDA live-localization pipeline. |
 
 The requested and effective profiles, algorithm name, dependency versions, capture revision, artifact sizes, and checksums are persisted. `auto` chooses CUDA only after capability verification; explicit CUDA failure or OOM does not silently substitute CPU inside the same attempt. The shipped CPU pipeline is intentionally documented as the current implementation, not described as pycolmap/global bundle adjustment.
 

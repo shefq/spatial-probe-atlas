@@ -31,6 +31,8 @@ export function ProbeRegistrationPage() {
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const viewMode = useUiStore((state) => state.viewMode);
+  const setViewMode = useUiStore((state) => state.setViewMode);
   const [overlayUrl, setOverlayUrl] = useState<string | null>(null);
   const overlayObjectUrls = useRef<string[]>([]);
   const [observationMode, setObservationMode] = useState<"aruco" | "kinematic">(() => {
@@ -288,6 +290,7 @@ export function ProbeRegistrationPage() {
       if (activeMap?.id) {
         await probeWorkflowApi.arucoAlignMap(projectId, activeMap.id, capture.id, parsedIds, 0.020);
         mapMsg = " and map aligned to board";
+        viewerRef.current?.reloadMap?.();
       }
       
       setCapture(null);
@@ -302,6 +305,7 @@ export function ProbeRegistrationPage() {
     try {
       const parsedIds = arucoIdsStr.split(",").map((s) => parseInt(s.trim(), 10)).filter((n) => !isNaN(n));
       await probeWorkflowApi.arucoAlignMap(projectId, activeMap.id, undefined, parsedIds, 0.020);
+      viewerRef.current?.reloadMap?.();
       pushToast({ kind: "success", title: "Map aligned directly from SFM markers" });
     } catch (value) { setError(errorMessage(value)); }
     finally { setBusy(false); }
@@ -386,7 +390,7 @@ export function ProbeRegistrationPage() {
       </div>
       <div className="workflow-grid workflow-grid--registration">
         <div className="registration-main">
-          <Card className="viewer-card registration-workspace-card" title="Registration workspace" eyebrow={workflowMode === "aruco_joint" ? "ARUCO BOARD" : (activeMap?.name ?? "MAP REQUIRED")} actions={<StatusBadge state={selectedRegistration?.validation_state ?? "pending"} />}>
+          <Card className="viewer-card registration-workspace-card" title="Registration workspace" eyebrow={workflowMode === "aruco_joint" ? "ARUCO BOARD" : (activeMap?.name ?? "MAP REQUIRED")} actions={<><Segmented label="View mode" value={viewMode} options={[{ value: "points", label: "Points" }, { value: "mesh", label: "Mesh" }]} onChange={(v) => setViewMode(v as "points" | "mesh")} /><StatusBadge state={selectedRegistration?.validation_state ?? "pending"} /></>}>
             <div className="registration-workspace-layout">
               <div className="registration-viewer-wrap">
                 {activeMap || workflowMode === "aruco_joint" ? <SpatialViewer ref={viewerRef} mode="registration" projectId={projectId} mapId={activeMap?.id ?? ""} registration={registrationView} probeGeometry={selectedCalibration?.probe?.marker_points_m} /> : <div className="viewer-empty"><EmptyState icon="⌖" title="No active reference map">Return to Mapping and activate a validated point cloud.</EmptyState></div>}

@@ -34,6 +34,7 @@ export interface SpatialViewerHandle {
   setCamSize: (size: number) => void;
   loadMesh: (projectId: string, mapId: string) => Promise<void>;
   setMeshVisibility: (visible: boolean) => void;
+  reloadMap: () => void;
 }
 
 export const SpatialViewer = forwardRef<SpatialViewerHandle, SpatialViewerProps>(function SpatialViewerV1(
@@ -43,6 +44,8 @@ export const SpatialViewer = forwardRef<SpatialViewerHandle, SpatialViewerProps>
   const engineRef = useRef<ViewerEngine | null>(null);
   const metricsRef = useRef(onMetrics); metricsRef.current = onMetrics;
   const pushToast = useUiStore((state) => state.pushToast);
+  const viewMode = useUiStore((state) => state.viewMode);
+  const setViewMode = useUiStore((state) => state.setViewMode);
   const [engineReady, setEngineReady] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -73,6 +76,7 @@ export const SpatialViewer = forwardRef<SpatialViewerHandle, SpatialViewerProps>
     setCamSize: (sz) => { setCamSizeState(sz); engineRef.current?.setCamSize(sz); },
     loadMesh: async (projectId: string, mapId: string) => await engineRef.current?.loadMesh(projectId, mapId),
     setMeshVisibility: (visible: boolean) => engineRef.current?.setMeshVisibility(visible),
+    reloadMap: () => setGeneration((g) => g + 1),
   }), []);
 
   useEffect(() => {
@@ -124,12 +128,31 @@ export const SpatialViewer = forwardRef<SpatialViewerHandle, SpatialViewerProps>
   }, [engineReady, projectId, mapId, generation]);
 
   useEffect(() => { if (engineReady && mode) engineRef.current?.setMode(mode); }, [engineReady, mode]);
-  useEffect(() => { if (engineReady && filters) engineRef.current?.setFilters(filters); }, [engineReady, filters]);
+  useEffect(() => {
+    if (engineReady && filters) {
+      engineRef.current?.setFilters({
+        ...filters,
+        ...(viewMode === "mesh" ? { showPoints: false } : {}),
+      });
+    }
+  }, [engineReady, filters, viewMode]);
   useEffect(() => { if (engineReady && selection) engineRef.current?.setSelection(selection); }, [engineReady, selection]);
   useEffect(() => { if (engineReady && registration) engineRef.current?.setRegistration(registration); }, [engineReady, registration]);
   useEffect(() => { if (engineReady && probeGeometry) engineRef.current?.setProbeGeometry(probeGeometry); }, [engineReady, probeGeometry]);
   useEffect(() => { if (engineReady && cameraIntrinsics) engineRef.current?.setCameraIntrinsics(cameraIntrinsics); }, [engineReady, cameraIntrinsics]);
   useEffect(() => { if (engineReady && paintData) engineRef.current?.setPaintData(paintData); }, [engineReady, paintData]);
+
+  useEffect(() => {
+    if (!engineReady || !engineRef.current || !projectId || !mapId) return;
+    if (viewMode === "mesh") {
+      engineRef.current.loadMesh(projectId, mapId).catch(console.error);
+      engineRef.current.setMeshVisibility(true);
+      engineRef.current.setFilters({ showPoints: false });
+    } else {
+      engineRef.current.setMeshVisibility(false);
+      engineRef.current.setFilters({ showPoints: true });
+    }
+  }, [engineReady, viewMode, projectId, mapId]);
 
   // Close popup on Escape key
   useEffect(() => {
@@ -179,7 +202,7 @@ export const SpatialViewer = forwardRef<SpatialViewerHandle, SpatialViewerProps>
         <div className="spatial-viewer__toolbar" style={{ display: "flex", gap: "12px", alignItems: "center", background: "rgba(10, 15, 24, 0.85)", padding: "6px 12px", borderRadius: "8px", backdropFilter: "blur(8px)", border: "1px solid rgba(255, 255, 255, 0.1)" }}>
           <span className="viewer-mode">{mode}</span>
 
-          <div style={{ display: "flex", alignItems: "center", gap: "6px", fontSize: "12px" }} title="Adjust point cloud point size">
+          <div style={{ display: "flex", alignItems: "center", gap: "6px", fontSize: "12px", borderLeft: "1px solid rgba(255,255,255,0.15)", paddingLeft: "10px" }} title="Adjust point cloud point size">
             <span>Pt Size:</span>
             <input type="range" min="0.001" max="0.15" step="0.001" value={pointSize}
               onChange={(e) => handlePointChange(parseFloat(e.target.value))}

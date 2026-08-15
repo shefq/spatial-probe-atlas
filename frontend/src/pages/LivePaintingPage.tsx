@@ -52,6 +52,8 @@ export function LivePaintingPage() {
   const [annotateRecord, setAnnotateRecord] = useState<PaintedRecord | null>(null);
   const [windowSec, setWindowSec] = useState(0.5);
   const [useWindowAvg, setUseWindowAvg] = useState(false);
+  const viewMode = useUiStore((state) => state.viewMode);
+  const setViewMode = useUiStore((state) => state.setViewMode);
 
   useEffect(() => {
     if (!project?.active_probe_calibration_id) return;
@@ -219,7 +221,7 @@ export function LivePaintingPage() {
               <div className="live-quality-ribbon"><StatusBadge state={tracking?.camera_state ?? "lost"} label={`Camera ${tracking?.camera_state ?? "waiting"}`} /><StatusBadge state={tracking?.probe_state ?? "lost"} label={`Probe ${tracking?.probe_state ?? "waiting"}`} /><StatusBadge state={tracking?.quality ?? "inactive"} label={`Quality ${tracking?.quality ?? "—"}`} /><StatusBadge state={reconnectState} label={`Stream ${reconnectState}`} /></div>
             </div>
             <aside className="live-controls">
-              <Card title="Session controls" eyebrow={session.name}>
+              <Card title="Session controls" eyebrow={session.name} actions={<Segmented label="View mode" value={viewMode} options={[{ value: "points", label: "Points" }, { value: "mesh", label: "Mesh" }]} onChange={(v) => setViewMode(v as "points" | "mesh")} />}>
                 <div className="button-row live-lifecycle">{state === "running" ? <Button onClick={() => void changeLifecycle("pause")} busy={busy}>Ⅱ Pause</Button> : state === "paused" || state === "degraded" || state === "recoverable" ? <Button variant="primary" onClick={() => void changeLifecycle("resume")} busy={busy}>▶ Resume</Button> : null}{["running", "paused", "degraded"].includes(state ?? "") ? <Button variant="danger" onClick={() => void changeLifecycle("stop")} busy={busy}>■ Stop</Button> : null}{state === "stopped" ? <Button variant="primary" onClick={() => void changeLifecycle("finalize")} busy={busy}>Finalize & review</Button> : null}</div>
                 <Toggle label="Continue live processing in background" checked={backgroundContinue} onChange={(event) => setBackgroundContinue(event.target.checked)} />
               </Card>

@@ -34,6 +34,8 @@ interface UiState {
   setDraftDirty: (scope: string, dirty: boolean) => void;
   pushToast: (toast: Omit<ToastMessage, "id">) => string;
   dismissToast: (id: string) => void;
+  viewMode: "points" | "mesh";
+  setViewMode: (mode: "points" | "mesh") => void;
 }
 
 export const useUiStore = create<UiState>((set) => ({
@@ -51,6 +53,8 @@ export const useUiStore = create<UiState>((set) => ({
     return id;
   },
   dismissToast: (id) => set((state) => ({ toasts: state.toasts.filter((toast) => toast.id !== id) })),
+  viewMode: "points",
+  setViewMode: (viewMode) => set({ viewMode }),
 }));
 
 interface ProjectState {
