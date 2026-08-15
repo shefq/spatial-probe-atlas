@@ -32,6 +32,8 @@ export interface SpatialViewerHandle {
   resetMapTransform: () => void;
   setPointSize: (size: number) => void;
   setCamSize: (size: number) => void;
+  loadMesh: (projectId: string, mapId: string) => Promise<void>;
+  setMeshVisibility: (visible: boolean) => void;
 }
 
 export const SpatialViewer = forwardRef<SpatialViewerHandle, SpatialViewerProps>(function SpatialViewerV1(
@@ -69,6 +71,8 @@ export const SpatialViewer = forwardRef<SpatialViewerHandle, SpatialViewerProps>
     resetMapTransform: () => engineRef.current?.resetMapTransform(),
     setPointSize: (sz) => { setPointSizeState(sz); engineRef.current?.setPointSize(sz); },
     setCamSize: (sz) => { setCamSizeState(sz); engineRef.current?.setCamSize(sz); },
+    loadMesh: async (projectId: string, mapId: string) => await engineRef.current?.loadMesh(projectId, mapId),
+    setMeshVisibility: (visible: boolean) => engineRef.current?.setMeshVisibility(visible),
   }), []);
 
   useEffect(() => {

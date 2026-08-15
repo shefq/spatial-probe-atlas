@@ -94,6 +94,8 @@ export interface ViewerEngine {
   setCameras(cameras: CameraItem[]): void;
   setCamSize(size: number): void;
   setPointSize(size: number): void;
+  loadMesh(projectId: string, mapId: string): Promise<void>;
+  setMeshVisibility(visible: boolean): void;
   resize(width: number, height: number, dpr: number): void;
   getMetrics(): ViewerMetrics;
   resetView(): void;

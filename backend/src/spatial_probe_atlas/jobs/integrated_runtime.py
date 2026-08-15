@@ -34,6 +34,10 @@ class RuntimeJobCoordinator(ProfileRuntimeJobCoordinator):
                 if job["type"] == "mapping":
                     result = await asyncio.to_thread(self._run_mapping, job_id, job)
                     self.catalog.update_resource(job["project_id"], "scene_map", job["owner_id"], payload_patch=result, state="ready_unscaled")
+                elif job["type"] == "mesh":
+                    result = await asyncio.to_thread(self._run_mesh, job_id, job)
+                    # Don't overwrite the state or payload of the map, just update job
+                    self.catalog.update_resource(job["project_id"], "scene_map", job["owner_id"], payload_patch={"mesh_available": True})
                 elif job["type"] == "session_export":
                     result = await asyncio.to_thread(self._run_export, job_id, job)
                     self.catalog.update_resource(job["project_id"], "export", job["owner_id"], payload_patch=result, state="completed")
