@@ -472,9 +472,24 @@ def _normalize_probe(value: dict[str, Any]) -> dict[str, Any]:
 @router.post("/projects/{project_id}/probe-calibrations/validate")
 async def validate_probe(request: Request, project_id: str) -> dict[str, Any]:
     value, _, _ = await _read_document(request)
+    if value.get("calibration_type") == "aruco_board":
+        return request.app.state.container.catalog.create_validation(
+            project_id,
+            "probe_calibration",
+            _checksum(value),
+            value,
+            {"marker_point_count": 0, "units": value.get("units"), "calibration_rms_px": None},
+            [],
+            [{
+                "path": "calibration_type",
+                "message": "This is an ArUco board calibration, not a five-marker probe calibration. Use it from Scene Capture & Mapping; do not import it into the probe calibration library.",
+            }],
+        )
     normalized = _normalize_probe(value)
     errors = validate_probe_calibration(normalized)
-    summary = {"marker_point_count": len(normalized.get("probe", {}).get("marker_points_m", [])), "units": normalized.get("units"), "calibration_rms_px": normalized.get("quality", {}).get("rms_reprojection_error_px")}
+    marker_points = normalized.get("probe", {}).get("marker_points_m")
+    marker_point_count = len(marker_points) if isinstance(marker_points, (list, tuple)) else 0
+    summary = {"marker_point_count": marker_point_count, "units": normalized.get("units"), "calibration_rms_px": normalized.get("quality", {}).get("rms_reprojection_error_px")}
     warnings = []
     if normalized.get("quality", {}).get("accepted_frame_count", 0) < 15:
         warnings.append({"code": "CALIBRATION_VIEW_COUNT_LOW", "message": "15-25 accepted views are recommended."})

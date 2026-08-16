@@ -161,3 +161,54 @@ def test_aruco_sfm_alignment_rejects_non_sfm_maps(client):
 
     assert response.status_code == 409
     assert response.json()["error"]["code"] == "SFM_ALIGNMENT_UNAVAILABLE"
+
+
+def test_scene_mapping_creates_downloadable_virtual_aruco_board_calibration(client):
+    container = client.app.state.container
+    project = container.catalog.create_project("Virtual board")
+    scene_map = container.catalog.create_resource(
+        project["project_id"], "scene_map", state="ready_metric", name="SfM map",
+        payload={"effective_compute_profile": "cuda_aliked_lightglue_v1"},
+    )
+    payload = {
+        "marker_ids": [6, 7, 5, 4],
+        "nominal_marker_size_m": 0.02,
+        "marker_separation_m": 0.005,
+        "columns": 2,
+    }
+
+    response = client.post(f"/api/v1/projects/{project['project_id']}/maps/{scene_map['map_id']}/aruco-board-calibration", json=payload)
+
+    assert response.status_code == 201
+    board = response.json()["board_calibration"]
+    assert board["board"]["marker_ids"] == payload["marker_ids"]
+    assert board["board"]["columns"] == 2
+    assert board["board"]["rows"] == 2
+    assert board["board"]["marker_separation_m"] == 0.005
+    assert len(board["board"]["layout"]) == 4
+    saved_map = container.catalog.get_resource(project["project_id"], "scene_map", scene_map["map_id"])
+    assert saved_map["aruco_board_calibration_id"] == board["board_calibration_id"]
+
+    download = client.get(f"/api/v1/projects/{project['project_id']}/aruco-board-calibrations/{board['board_calibration_id']}/download")
+    assert download.status_code == 200
+    assert download.json()["calibration_type"] == "aruco_board"
+    assert download.json()["board"] == board["board"]
+
+
+def test_probe_calibration_validation_rejects_board_calibration_without_crashing(client):
+    project = client.app.state.container.catalog.create_project("Board upload")
+    board = {
+        "schema_version": "1.0.0",
+        "calibration_type": "aruco_board",
+        "units": "m",
+        "board": {"dictionary": "DICT_4X4_50", "marker_ids": [6]},
+    }
+
+    response = client.post(
+        f"/api/v1/projects/{project['project_id']}/probe-calibrations/validate",
+        files={"file": ("aruco_board_calibration.json", json.dumps(board), "application/json")},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["valid"] is False
+    assert "not a five-marker probe calibration" in response.json()["errors"][0]["message"]

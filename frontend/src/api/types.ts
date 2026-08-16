@@ -136,6 +136,23 @@ export interface ArucoAlignmentMetrics {
   corner_inlier_count: number;
 }
 
+export interface ArucoBoardCalibration {
+  id: UUID;
+  board_calibration_id: UUID;
+  name: string;
+  state: LifecycleState;
+  created_at: IsoTimestamp;
+  board: {
+    dictionary: string;
+    marker_ids: number[];
+    marker_size_m: number;
+    marker_separation_m: number;
+    columns: number;
+    rows: number;
+    layout: Record<string, number[][]>;
+  };
+}
+
 export interface SceneMap {
   id: UUID;
   project_id: UUID;
@@ -153,6 +170,7 @@ export interface SceneMap {
   manifest_url?: string;
   user_transform?: MapTransform;
   similarity_s_w_m0?: ArucoAlignmentMetrics & { scale: number; rotation: number[]; translation: number[] };
+  aruco_board_calibration_id?: UUID;
   job_id?: UUID;
   created_at: IsoTimestamp;
 }

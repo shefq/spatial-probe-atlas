@@ -212,7 +212,7 @@ export function MappingPage() {
           </Card>
           {activeJob ? <JobCard job={activeJob} onRefresh={() => void refresh()} /> : null}
           {selectedMap ? <Card title="Map result" eyebrow="VALIDATION"><div className="metric-grid"><Metric label="Points" value={formatCount(selectedMap.point_count)} /><Metric label="Registered" value={formatCount(selectedMap.registered_image_count)} /><Metric label="Reprojection" value={selectedMap.reprojection_error_px == null ? "—" : `${selectedMap.reprojection_error_px.toFixed(2)} px`} /><Metric label="Size" value={formatBytes(selectedMap.size_bytes)} /></div><StatusBadge state={selectedMap.active ? "active" : selectedMap.state} />
-            {selectedMap.effective_compute_profile?.includes("cuda") ? <><SfmBoardAlignment projectId={projectId} mapId={selectedMap.id} mapState={selectedMap.state} busy={busy} setBusy={setBusy} refresh={refresh} onAligned={() => viewerRef.current?.reloadMap?.()} /><OpenMvsRunner projectId={projectId} mapId={selectedMap.id} mapState={selectedMap.state} busy={busy} setBusy={setBusy} refresh={refresh} /></> : null}
+            {selectedMap.effective_compute_profile?.includes("cuda") ? <><SfmBoardAlignment projectId={projectId} mapId={selectedMap.id} mapState={selectedMap.state} boardCalibrationId={selectedMap.aruco_board_calibration_id} busy={busy} setBusy={setBusy} refresh={refresh} onAligned={() => viewerRef.current?.reloadMap?.()} /><OpenMvsRunner projectId={projectId} mapId={selectedMap.id} mapState={selectedMap.state} busy={busy} setBusy={setBusy} refresh={refresh} /></> : null}
           </Card> : null}
         </aside>
       </div>
@@ -220,23 +220,52 @@ export function MappingPage() {
   );
 }
 
-function SfmBoardAlignment({ projectId, mapId, mapState, busy, setBusy, refresh, onAligned }: { projectId: string; mapId: string; mapState: string; busy: boolean; setBusy: (busy: boolean) => void; refresh: () => Promise<void>; onAligned: () => void }) {
+function SfmBoardAlignment({ projectId, mapId, mapState, boardCalibrationId, busy, setBusy, refresh, onAligned }: { projectId: string; mapId: string; mapState: string; boardCalibrationId?: string; busy: boolean; setBusy: (busy: boolean) => void; refresh: () => Promise<void>; onAligned: () => void }) {
   const pushToast = useUiStore((state) => state.pushToast);
   const [markerIds, setMarkerIds] = useState("6, 7, 5");
   const [markerSizeMm, setMarkerSizeMm] = useState("35");
+  const [markerSeparationMm, setMarkerSeparationMm] = useState("35");
+  const [columns, setColumns] = useState("3");
   const [maxRmsPx, setMaxRmsPx] = useState("2.0");
   const canRun = mapState.startsWith("ready") || mapState === "active";
-  const align = async () => {
+  const boardInputs = () => {
     const ids = Array.from(new Set(markerIds.split(",").map((value) => Number.parseInt(value.trim(), 10)).filter(Number.isFinite)));
     const markerSizeM = Number(markerSizeMm) / 1000;
-    const threshold = Number(maxRmsPx);
-    if (!ids.length || !Number.isFinite(markerSizeM) || markerSizeM <= 0 || !Number.isFinite(threshold) || threshold <= 0) {
-      pushToast({ kind: "error", title: "Alignment settings are invalid", message: "Enter one or more marker IDs, a positive side length, and a positive RMS threshold." });
+    const markerSeparationM = Number(markerSeparationMm) / 1000;
+    const boardColumns = Number.parseInt(columns, 10);
+    return { ids, markerSizeM, markerSeparationM, boardColumns };
+  };
+  const createBoard = async () => {
+    const { ids, markerSizeM, markerSeparationM, boardColumns } = boardInputs();
+    if (!ids.length || !Number.isFinite(markerSizeM) || markerSizeM <= 0 || !Number.isFinite(markerSeparationM) || markerSeparationM < 0 || !Number.isInteger(boardColumns) || boardColumns < 1 || boardColumns > ids.length) {
+      pushToast({ kind: "error", title: "Board settings are invalid", message: "Enter marker IDs, a positive side length, a non-negative gap, and a valid column count." });
       return;
     }
     setBusy(true);
     try {
-      const map = await api.maps.alignAruco(projectId, mapId, ids, markerSizeM, threshold);
+      const result = await api.maps.createArucoBoard(projectId, mapId, ids, markerSizeM, markerSeparationM, boardColumns);
+      await refresh();
+      pushToast({ kind: "success", title: "Virtual ArUco board calibration created", message: `${result.board_calibration.board.marker_ids.length} markers stored in reusable metric calibration data.` });
+    } catch (error) {
+      pushToast({ kind: "error", title: "Board calibration creation failed", message: errorMessage(error) });
+    } finally {
+      setBusy(false);
+    }
+  };
+  const align = async () => {
+    const { ids } = boardInputs();
+    const threshold = Number(maxRmsPx);
+    if (!boardCalibrationId) {
+      pushToast({ kind: "warning", title: "Create the virtual board first", message: "The map is aligned only to a stored ArUco board calibration." });
+      return;
+    }
+    if (!ids.length || !Number.isFinite(threshold) || threshold <= 0) {
+      pushToast({ kind: "error", title: "Alignment settings are invalid", message: "Enter one or more marker IDs and a positive RMS threshold." });
+      return;
+    }
+    setBusy(true);
+    try {
+      const map = await api.maps.alignAruco(projectId, mapId, boardCalibrationId, ids, threshold);
       const metrics = map.similarity_s_w_m0;
       onAligned();
       await refresh();
@@ -253,11 +282,13 @@ function SfmBoardAlignment({ projectId, mapId, mapState, busy, setBusy, refresh,
   };
   return (
     <div className="button-row" style={{ marginTop: 12, display: "flex", flexDirection: "column", gap: 8 }}>
-      <Field label="Virtual ArUco board" hint="Uses the active board layout when available; otherwise creates a centred linear layout from these IDs and side length.">
+      <Field label="Virtual ArUco board" hint="Create and persist the exact metric board definition before alignment. IDs are laid out row-major, left to right, top to bottom.">
         <div className="button-row"><TextInput aria-label="ArUco marker IDs" value={markerIds} onChange={(event) => setMarkerIds(event.target.value)} /><TextInput aria-label="ArUco marker side length in millimetres" value={markerSizeMm} onChange={(event) => setMarkerSizeMm(event.target.value)} /></div>
+        <div className="button-row"><TextInput aria-label="ArUco marker separation in millimetres" value={markerSeparationMm} onChange={(event) => setMarkerSeparationMm(event.target.value)} /><TextInput aria-label="ArUco board column count" value={columns} onChange={(event) => setColumns(event.target.value)} /></div>
       </Field>
+      <div className="button-row"><Button size="sm" variant="default" busy={busy} disabled={!canRun} onClick={() => void createBoard()}>{boardCalibrationId ? "Create replacement board calibration" : "Create virtual board calibration"}</Button>{boardCalibrationId ? <Button size="sm" onClick={() => api.maps.downloadArucoBoard(projectId, boardCalibrationId)}>Download board calibration JSON</Button> : null}</div>
       <Field label="Accept RMS reprojection error (px)" hint="Alignment is saved only when robust all-corner RMS is at or below this limit."><TextInput aria-label="Maximum RMS reprojection error" value={maxRmsPx} onChange={(event) => setMaxRmsPx(event.target.value)} /></Field>
-      <Button size="sm" variant="default" busy={busy} disabled={!canRun} onClick={() => void align()}>Align SfM map to virtual ArUco board</Button>
+      <Button size="sm" variant="primary" busy={busy} disabled={!canRun || !boardCalibrationId} onClick={() => void align()}>Align SfM map to virtual ArUco board</Button>
     </div>
   );
 }

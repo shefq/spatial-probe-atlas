@@ -6,6 +6,8 @@ import hashlib
 import importlib.util
 import json
 import shutil
+import uuid
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -398,6 +400,110 @@ def _extract_colmap_cameras(container: Any, project_id: str, map_dir: Path, capt
         return []
 
 
+def _aruco_marker_ids(value: Any) -> list[int]:
+    try:
+        marker_ids = list(dict.fromkeys(int(marker_id) for marker_id in value))
+    except (TypeError, ValueError) as exc:
+        raise AppError("ARUCO_MARKER_IDS_INVALID", "Marker IDs must be a non-empty list of integer IDs.", status_code=422) from exc
+    if not marker_ids:
+        raise AppError("ARUCO_MARKER_IDS_INVALID", "At least one ArUco marker ID is required.", status_code=422)
+    return marker_ids
+
+
+def _virtual_board_definition(body: dict[str, Any]) -> dict[str, Any]:
+    marker_ids = _aruco_marker_ids(body.get("marker_ids", [6, 7, 5]))
+    try:
+        marker_size_m = float(body.get("nominal_marker_size_m", 0.035))
+        separation_m = float(body.get("marker_separation_m", marker_size_m))
+        columns = int(body.get("columns", len(marker_ids)))
+    except (TypeError, ValueError) as exc:
+        raise AppError("ARUCO_BOARD_DIMENSIONS_INVALID", "Marker size, separation, and columns must be numeric values.", status_code=422) from exc
+    if not np.isfinite(marker_size_m) or not 0.001 <= marker_size_m <= 1.0:
+        raise AppError("ARUCO_MARKER_SIZE_INVALID", "The marker side length must be between 1 mm and 1 m.", status_code=422)
+    if not np.isfinite(separation_m) or not 0.0 <= separation_m <= 1.0:
+        raise AppError("ARUCO_MARKER_SEPARATION_INVALID", "The marker separation must be between 0 and 1 m.", status_code=422)
+    if not 1 <= columns <= len(marker_ids):
+        raise AppError("ARUCO_BOARD_COLUMNS_INVALID", "The board column count must be between one and the number of markers.", status_code=422)
+
+    rows = int(np.ceil(len(marker_ids) / columns))
+    pitch = marker_size_m + separation_m
+    centres = []
+    for index in range(len(marker_ids)):
+        row, column = divmod(index, columns)
+        centres.append([column * pitch, -row * pitch, 0.0])
+    centres_array = np.asarray(centres, dtype=np.float64)
+    centres_array -= centres_array.mean(axis=0, keepdims=True)
+    half = marker_size_m / 2.0
+    layout: dict[str, list[list[float]]] = {}
+    for marker_id, (cx, cy, _) in zip(marker_ids, centres_array):
+        layout[str(marker_id)] = [
+            [float(cx - half), float(cy + half), 0.0],
+            [float(cx + half), float(cy + half), 0.0],
+            [float(cx + half), float(cy - half), 0.0],
+            [float(cx - half), float(cy - half), 0.0],
+        ]
+    return {
+        "dictionary": "DICT_4X4_50",
+        "convention_version": 1,
+        "marker_ids": marker_ids,
+        "anchor_id": marker_ids[len(marker_ids) // 2],
+        "marker_size_m": marker_size_m,
+        "marker_separation_m": separation_m,
+        "columns": columns,
+        "rows": rows,
+        "layout": layout,
+    }
+
+
+def _persist_aruco_board_calibration(container: Any, project_id: str, map_id: str, board: dict[str, Any], name: str | None = None) -> dict[str, Any]:
+    board_calibration_id = str(uuid.uuid4())
+    document = {
+        "schema_version": "1.0.0",
+        "calibration_type": "aruco_board",
+        "board_calibration_id": board_calibration_id,
+        "name": str(name or "Virtual ArUco board"),
+        "created_at": datetime.now(UTC).isoformat(),
+        "units": "m",
+        "board": board,
+        "provenance": {"method": "virtual_aruco_board_definition_v1", "source": "scene_capture_mapping"},
+    }
+    artifact = container.artifacts.atomic_write_json(
+        container.artifacts.project_path(project_id, Path("calibrations/aruco-board") / f"{board_calibration_id}.json"),
+        document,
+    )
+    checksum = hashlib.sha256(json.dumps(document, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+    calibration = container.catalog.create_resource(
+        project_id,
+        "aruco_board_calibration",
+        state="valid",
+        name=document["name"],
+        parent_id=map_id,
+        resource_id=board_calibration_id,
+        payload={**document, "artifact": artifact, "checksum": checksum},
+    )
+    container.catalog.update_resource(project_id, "scene_map", map_id, payload_patch={"aruco_board_calibration_id": board_calibration_id})
+    return calibration
+
+
+@router.post("/projects/{project_id}/maps/{map_id}/aruco-board-calibration", status_code=201)
+def create_virtual_aruco_board_calibration(request: Request, project_id: str, map_id: str, body: dict[str, Any]) -> dict[str, Any]:
+    container = request.app.state.container
+    container.catalog.get_resource(project_id, "scene_map", map_id)
+    board = _virtual_board_definition(body)
+    calibration = _persist_aruco_board_calibration(container, project_id, map_id, board, body.get("name"))
+    return {"board_calibration": calibration}
+
+
+@router.get("/projects/{project_id}/aruco-board-calibrations/{board_calibration_id}/download")
+def download_aruco_board_calibration(request: Request, project_id: str, board_calibration_id: str) -> FileResponse:
+    calibration = request.app.state.container.catalog.get_resource(project_id, "aruco_board_calibration", board_calibration_id)
+    artifact = calibration.get("artifact") or {}
+    path = request.app.state.container.artifacts.root / str(artifact.get("relative_uri", ""))
+    if not path.is_file():
+        raise AppError("ARTIFACT_NOT_FOUND", "The ArUco board calibration artifact is missing.", status_code=404)
+    return FileResponse(path, media_type="application/json", filename="aruco_board_calibration.json", headers={"ETag": f'"{artifact.get("sha256", "")}"'})
+
+
 @router.post("/projects/{project_id}/maps/{map_id}/align-aruco")
 def align_map_to_aruco_endpoint(request: Request, project_id: str, map_id: str, body: dict[str, Any]) -> dict[str, Any]:
     from spatial_probe_atlas.pipelines.mapping.align import align_map_to_aruco
@@ -425,41 +531,27 @@ def align_map_to_aruco_endpoint(request: Request, project_id: str, map_id: str, 
         
     sfm_dir = container.catalog.artifacts.root / sfm["relative_uri"]
     
-    calibrations = []
-    if body.get("probe_capture_id"):
-        calibrations = container.catalog.list_resources(project_id, "probe_calibration", parent_id=capture_id, limit=1)
+    board_calibration_id = str(body.get("board_calibration_id") or scene_map.get("aruco_board_calibration_id") or "")
+    if board_calibration_id:
+        board_calibration = container.catalog.get_resource(project_id, "aruco_board_calibration", board_calibration_id)
+        board_def = board_calibration.get("board")
+        if not isinstance(board_def, dict):
+            raise AppError("ARUCO_BOARD_CALIBRATION_INVALID", "The selected ArUco board calibration has no valid board definition.", status_code=422)
     else:
-        active_calib_id = container.catalog.get_project(project_id).get("active_probe_calibration_id")
-        if active_calib_id:
-            calib = container.catalog.get_resource(project_id, "probe_calibration", active_calib_id)
-            if calib:
-                calibrations.append(calib)
-                
-    try:
-        marker_ids = list(dict.fromkeys(int(value) for value in body.get("marker_ids", [6, 7, 5])))
-    except (TypeError, ValueError) as exc:
-        raise AppError("ARUCO_MARKER_IDS_INVALID", "Marker IDs must be a non-empty list of integer IDs.", status_code=422) from exc
-    if not marker_ids:
-        raise AppError("ARUCO_MARKER_IDS_INVALID", "At least one ArUco marker ID is required.", status_code=422)
-    if not calibrations:
-        # Fallback to default 3-marker layout with 4 corners per marker
-        marker_size = float(body.get("nominal_marker_size_m", 0.035))
-        if not np.isfinite(marker_size) or not 0.001 <= marker_size <= 1.0:
-            raise AppError("ARUCO_MARKER_SIZE_INVALID", "The nominal marker side length must be between 1 mm and 1 m.", status_code=422)
-        spacing = 0.07
-        half = marker_size / 2.0
-        board_dict = {}
-        for index, m_id in enumerate(marker_ids):
-            cx = (index - (len(marker_ids) - 1) / 2.0) * spacing
-            board_dict[m_id] = [
-                [cx - half, half, 0.0],
-                [cx + half, half, 0.0],
-                [cx + half, -half, 0.0],
-                [cx - half, -half, 0.0],
-            ]
-    else:
-        board_dict = calibrations[0]["board"]["layout"]
-        
+        # Preserve compatibility for the registration page: a board attached to
+        # the active probe calibration is copied into a standalone immutable
+        # board-calibration artifact before it is used for map alignment.
+        active_calibration_id = container.catalog.get_project(project_id).get("active_probe_calibration_id")
+        active_calibration = container.catalog.get_resource(project_id, "probe_calibration", active_calibration_id) if active_calibration_id else None
+        source_board = active_calibration.get("board") if isinstance(active_calibration, dict) else None
+        board_def = source_board if isinstance(source_board, dict) else _virtual_board_definition(body)
+        board_calibration = _persist_aruco_board_calibration(container, project_id, map_id, board_def, body.get("board_name"))
+        board_calibration_id = board_calibration["board_calibration_id"]
+
+    marker_ids = _aruco_marker_ids(body.get("marker_ids", board_def.get("marker_ids", [])))
+    board_dict = board_def.get("layout")
+    if not isinstance(board_dict, dict):
+        raise AppError("ARUCO_BOARD_LAYOUT_INVALID", "The selected ArUco board calibration has no marker-corner layout.", status_code=422)
     try:
         board_layout = {int(k): np.asarray(v, dtype=np.float32).reshape(4, 3) for k, v in board_dict.items()}
     except (TypeError, ValueError) as exc:
@@ -496,43 +588,6 @@ def align_map_to_aruco_endpoint(request: Request, project_id: str, map_id: str, 
             },
         )
     
-    # Build board calibration payload definition
-    board_def = {
-        "dictionary": "DICT_4X4_50",
-        "marker_ids": [int(m) for m in marker_ids],
-        "anchor_id": int(marker_ids[1]) if len(marker_ids) > 1 else int(marker_ids[0]),
-        "marker_size_m": float(body.get("nominal_marker_size_m", 0.035)),
-        "layout": {str(k): (v.tolist() if isinstance(v, np.ndarray) else v) for k, v in board_dict.items()}
-    }
-    
-    # Update current active calibration's board data if exists, else create a calibration with board data only
-    active_calib_id = container.catalog.get_project(project_id).get("active_probe_calibration_id")
-    if active_calib_id:
-        container.catalog.update_resource(
-            project_id, "probe_calibration", active_calib_id,
-            payload_patch={"board": board_def}
-        )
-    else:
-        from spatial_probe_atlas.api.calibration_registration import _portable_calibration, _checksum
-        portable = _portable_calibration(
-            "ArUco Board Calibration (SFM)",
-            len(accepted),
-            len(accepted),
-            container.catalog.get_project(project_id).get("name")
-        )
-        portable["board"] = board_def
-        calib_id = portable["calibration_id"]
-        artifact = container.artifacts.atomic_write_json(
-            container.artifacts.project_path(project_id, Path("calibrations/probe") / f"{calib_id}.json"),
-            portable
-        )
-        created = container.catalog.create_resource(
-            project_id, "probe_calibration", state="valid", name=portable["name"],
-            resource_id=calib_id,
-            payload={**portable, "artifact": artifact, "checksum": _checksum(portable)}
-        )
-        container.catalog.activate(project_id, "probe_calibration", created["probe_calibration_id"])
-        
     rotation_matrix = np.array(solution["rotation"]).reshape(3, 3)
     from scipy.spatial.transform import Rotation
     quaternion = Rotation.from_matrix(rotation_matrix).as_quat().tolist()
@@ -540,6 +595,7 @@ def align_map_to_aruco_endpoint(request: Request, project_id: str, map_id: str, 
     return container.catalog.update_resource(
         project_id, "scene_map", map_id, 
         payload_patch={
+            "aruco_board_calibration_id": board_calibration_id,
             "similarity_s_w_m0": solution,
             "user_transform": {
                 "position": solution["translation"],

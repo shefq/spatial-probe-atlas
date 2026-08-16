@@ -1,7 +1,7 @@
 import type {
   ApiErrorPayload, AppSettings, CalibrationValidation, CameraDevice, CameraStatus, Capabilities, CaptureFrame,
   CaptureSet, DiagnosticCheck, ExportSnapshot, JobSnapshot, PagedResult, PaintedRecord, PointCloudManifest,
-  ProbeCalibration, Project, ProjectSummary, Registration, ResourceSnapshot, ReviewFilters, SceneMap, MapTransform,
+  ProbeCalibration, Project, ProjectSummary, Registration, ResourceSnapshot, ReviewFilters, SceneMap, MapTransform, ArucoBoardCalibration,
   SessionSnapshot, SessionSummary,
 } from "./types";
 
@@ -131,7 +131,9 @@ export const api = {
     create: (projectId: string, set: CaptureSet, computeProfile: string, name: string) => request<SceneMap & { job_id: string }>(`/projects/${projectId}/maps`, { method: "POST", body: JSON.stringify({ capture_set_id: set.id, capture_set_revision: set.revision, compute_profile: computeProfile, name }) }),
     saveTransform: (projectId: string, id: string, transform: MapTransform) => request<{ status: string; user_transform: MapTransform }>(`/projects/${projectId}/maps/${id}/transform`, { method: "POST", body: JSON.stringify(transform) }),
     activate: (projectId: string, id: string) => request<void>(`/projects/${projectId}/maps/${id}/activate`, { method: "POST" }),
-    alignAruco: (projectId: string, id: string, markerIds: number[], nominalMarkerSizeM: number, maxRmsReprojectionErrorPx: number) => request<SceneMap>(`/projects/${projectId}/maps/${id}/align-aruco`, { method: "POST", body: JSON.stringify({ marker_ids: markerIds, nominal_marker_size_m: nominalMarkerSizeM, max_rms_reprojection_error_px: maxRmsReprojectionErrorPx }) }),
+    createArucoBoard: (projectId: string, id: string, markerIds: number[], nominalMarkerSizeM: number, markerSeparationM: number, columns: number) => request<{ board_calibration: ArucoBoardCalibration }>(`/projects/${projectId}/maps/${id}/aruco-board-calibration`, { method: "POST", body: JSON.stringify({ marker_ids: markerIds, nominal_marker_size_m: nominalMarkerSizeM, marker_separation_m: markerSeparationM, columns }) }),
+    alignAruco: (projectId: string, id: string, boardCalibrationId: string, markerIds: number[], maxRmsReprojectionErrorPx: number) => request<SceneMap>(`/projects/${projectId}/maps/${id}/align-aruco`, { method: "POST", body: JSON.stringify({ board_calibration_id: boardCalibrationId, marker_ids: markerIds, max_rms_reprojection_error_px: maxRmsReprojectionErrorPx }) }),
+    downloadArucoBoard: (projectId: string, id: string) => downloadFromApi(`/projects/${projectId}/aruco-board-calibrations/${id}/download`, "aruco_board_calibration.json"),
     generateMesh: (projectId: string, id: string, openmvsBin?: string) => request<{ job_id: string }>(`/projects/${projectId}/maps/${id}/mesh`, { method: "POST", body: JSON.stringify({ openmvs_bin: openmvsBin || null }) }),
     manifest: (projectId: string, id: string, signal?: AbortSignal) => request<PointCloudManifest>(`/projects/${projectId}/maps/${id}/point-cloud/manifest`, { signal }),
   },
