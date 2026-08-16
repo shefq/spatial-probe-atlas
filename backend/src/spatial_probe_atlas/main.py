@@ -345,7 +345,16 @@ def cli() -> None:
     settings = Settings.from_env()
     # Passing the already-created app avoids importing this module a second time. Access
     # logging is disabled because the bootstrap token is carried in the initial URL.
-    uvicorn.run(create_app(settings), host=settings.host, port=settings.port, log_level=settings.log_level, access_log=False)
+    # ws_ping_interval is set to None to avoid concurrency collisions during high-rate image streaming.
+    uvicorn.run(
+        create_app(settings),
+        host=settings.host,
+        port=settings.port,
+        log_level=settings.log_level,
+        access_log=False,
+        ws_ping_interval=None,
+        ws_ping_timeout=None,
+    )
 
 
 if __name__ == "__main__":

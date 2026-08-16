@@ -65,6 +65,8 @@ def estimate_planar_pose(
     image_points = np.asarray(image_points, dtype=np.float64).reshape(-1, 2)
     if len(object_points) < 4:
         return None
+    
+    rvecs, tvecs = [], []
     try:
         solved = cv2.solvePnPGeneric(
             object_points,
@@ -73,13 +75,31 @@ def estimate_planar_pose(
             ZERO_DISTORTION,
             flags=cv2.SOLVEPNP_IPPE,
         )
+        if solved[0] and len(solved[1]) > 0:
+            rvecs, tvecs = list(solved[1]), list(solved[2])
     except Exception:
-        return None
-    if not solved[0]:
+        pass
+
+    if not rvecs:
+        try:
+            flag = cv2.SOLVEPNP_SQPNP if hasattr(cv2, "SOLVEPNP_SQPNP") else cv2.SOLVEPNP_ITERATIVE
+            ok, rvec, tvec = cv2.solvePnP(
+                object_points,
+                image_points,
+                K,
+                ZERO_DISTORTION,
+                flags=flag,
+            )
+            if ok:
+                rvecs, tvecs = [rvec], [tvec]
+        except Exception:
+            pass
+
+    if not rvecs:
         return None
 
     candidates: list[tuple[float, PoseEstimate]] = []
-    for rvec, tvec in zip(solved[1], solved[2]):
+    for rvec, tvec in zip(rvecs, tvecs):
         camera_points = transform_points(matrix_from_pose(rvec, tvec), object_points)
         if np.any(camera_points[:, 2] <= 0.0):
             continue

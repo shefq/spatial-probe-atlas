@@ -88,8 +88,9 @@ export function ProbeRegistrationPage() {
     const stream = new ReconnectingSocket(`/ws/v1/projects/${projectId}/probe-tuning`, {
       onBinary: (message) => {
         const kind = String(message.header.kind ?? "");
-        if (kind !== "overlay") return;
-        const url = URL.createObjectURL(new Blob([message.payload], { type: "image/png" }));
+        const encoding = String(message.header?.encoding ?? "jpeg");
+        const mime = encoding.includes("png") ? "image/png" : "image/jpeg";
+        const url = URL.createObjectURL(new Blob([message.payload], { type: mime }));
         overlayObjectUrls.current.push(url);
         setOverlayUrl((prev) => { if (prev) URL.revokeObjectURL(prev); return url; });
       },
@@ -111,7 +112,7 @@ export function ProbeRegistrationPage() {
   }, [cameraReady, projectId, selectedCalibrationId, tuningOpen]);
 
   useEffect(() => {
-    if (!cameraReady || !selectedCalibrationId) {
+    if (!cameraReady) {
       setKinematicPose(null);
       return;
     }
@@ -137,7 +138,7 @@ export function ProbeRegistrationPage() {
     });
     stream.connect();
     return () => stream.close();
-  }, [cameraReady, projectId, selectedRegistrationId, observationMode, activeMap, selectedCalibrationId, workflowMode]);
+  }, [cameraReady, projectId, selectedRegistrationId, observationMode, activeMap, workflowMode]);
 
   useEffect(() => {
     if (workflowMode === "aruco_joint" && selectedCalibrationId) {
@@ -151,35 +152,11 @@ export function ProbeRegistrationPage() {
   const selectedCalibration = calibrations.find((item) => item.id === selectedCalibrationId);
   const selectedRegistration = registrations.find((item) => item.id === selectedRegistrationId);
   
-  const fallbackBoardDefinition = useMemo(() => {
-    const ids = arucoIdsStr.split(",").map((s) => parseInt(s.trim(), 10)).filter((n) => !isNaN(n));
-    const validIds = ids.length > 0 ? ids : [6, 7, 5];
-    const layout: Record<string, number[][]> = {};
-    const markerSize = 0.035;
-    const spacing = 0.07;
-    validIds.forEach((id, index) => {
-      const cx = (index - (validIds.length - 1) / 2) * spacing;
-      layout[String(id)] = [
-        [cx - markerSize / 2, markerSize / 2, 0], // Top-Left
-        [cx + markerSize / 2, markerSize / 2, 0], // Top-Right
-        [cx + markerSize / 2, -markerSize / 2, 0], // Bottom-Right
-        [cx - markerSize / 2, -markerSize / 2, 0], // Bottom-Left
-      ];
-    });
-    return {
-      dictionary: "DICT_4X4_50",
-      marker_ids: validIds,
-      anchor_id: validIds[1] ?? validIds[0],
-      marker_size_m: markerSize,
-      layout,
-    };
-  }, [arucoIdsStr]);
-
   const registrationView = useMemo(() => ({
-    t_w_b: selectedRegistration?.t_w_b, 
-    scale: selectedRegistration?.scale, 
-    board_definition: selectedRegistration?.board_definition ?? (workflowMode === "aruco_joint" || observationMode === "aruco" ? fallbackBoardDefinition : undefined)
-  }), [selectedRegistration?.t_w_b, selectedRegistration?.scale, selectedRegistration?.board_definition, workflowMode, observationMode, fallbackBoardDefinition]);
+    t_w_b: selectedRegistration?.t_w_b ?? (activeMap as any)?.similarity_s_w_m0?.translation, 
+    scale: selectedRegistration?.scale ?? (activeMap as any)?.similarity_s_w_m0?.scale, 
+    board_definition: selectedRegistration?.board_definition ?? (activeMap as any)?.board_definition ?? (activeMap as any)?.aruco_board_definition
+  }), [selectedRegistration?.t_w_b, selectedRegistration?.scale, selectedRegistration?.board_definition, activeMap]);
 
   const isValidated = ["passed", "accepted_with_warning", "failed"].includes(selectedRegistration?.validation_state ?? "") || selectedRegistration?.state === "validated";
   const registrationStep = !selectedRegistration
@@ -286,30 +263,12 @@ export function ProbeRegistrationPage() {
       setRegistrations((items) => [result.registration, ...items]);
       setSelectedRegistrationId(result.registration.id);
       
-      let mapMsg = "";
-      if (activeMap?.id) {
-        await probeWorkflowApi.arucoAlignMap(projectId, activeMap.id, capture.id, parsedIds, 0.020);
-        mapMsg = " and map aligned to board";
-        viewerRef.current?.reloadMap?.();
-      }
-      
       setCapture(null);
-      pushToast({ kind: "success", title: `ArUco Joint Calibration complete${mapMsg}` });
+      pushToast({ kind: "success", title: "ArUco Joint Calibration complete" });
     } catch (value) { setError(errorMessage(value)); }
     finally { setBusy(false); }
   };
-  
-  const alignMapFromSfm = async () => {
-    if (!activeMap?.id) return;
-    setBusy(true);
-    try {
-      const parsedIds = arucoIdsStr.split(",").map((s) => parseInt(s.trim(), 10)).filter((n) => !isNaN(n));
-      await probeWorkflowApi.arucoAlignMap(projectId, activeMap.id, undefined, parsedIds, 0.020);
-      viewerRef.current?.reloadMap?.();
-      pushToast({ kind: "success", title: "Map aligned directly from SFM markers" });
-    } catch (value) { setError(errorMessage(value)); }
-    finally { setBusy(false); }
-  };
+
 
   const registrationAction = async (action: "observe" | "solve" | "validate" | "accept" | "activate") => {
     if (!selectedRegistration) return;
@@ -381,8 +340,8 @@ export function ProbeRegistrationPage() {
         </InlineAlert>
       ) : null}
       <div className="status-card-row">
-        <Metric label="Active calibration" value={selectedCalibration?.active ? `r${selectedCalibration.revision}` : "Not active"} tone={selectedCalibration?.active ? "good" : "warning"} />
-        <Metric label="Camera PnP" value={observationMode === "kinematic" ? (cameraState === "tracked" ? "Tracked" : "Lost") : "N/A"} tone={observationMode === "kinematic" && cameraState === "tracked" ? "good" : observationMode === "kinematic" ? "warning" : undefined} detail={observationMode === "kinematic" ? `${cameraInliers} map inliers` : "ArUco mode"} />
+        <Metric label="Active calibration" value={selectedCalibration?.active ? `r${selectedCalibration.revision}` : "Not active"} tone={selectedCalibration?.active ? "good" : undefined} />
+        <Metric label="Camera PnP" value={cameraState === "tracked" ? "Tracked" : "Lost"} tone={cameraState === "tracked" ? "good" : "warning"} detail={observationMode === "kinematic" ? `${cameraInliers} map inliers` : `${cameraInliers} ArUco corners`} />
         <Metric label="Probe tracking" value={probeMetrics.tracked ? "5 / 5" : `${probeMetrics.inliers} / 5`} tone={probeMetrics.tracked ? "good" : "warning"} detail={testState === "open" ? "live" : testState} />
         <Metric label="Calibration error" value={selectedCalibration ? `${selectedCalibration.quality.rms_reprojection_error_px.toFixed(2)} px` : "—"} />
         <Metric label="Registration RMS" value={selectedRegistration?.rms_residual_mm == null ? "—" : `${selectedRegistration.rms_residual_mm.toFixed(2)} mm`} tone={(selectedRegistration?.rms_residual_mm ?? 0) > 3 ? "warning" : undefined} />
@@ -475,7 +434,6 @@ export function ProbeRegistrationPage() {
                   action={
                     <div className="button-row">
                       {(capture?.accepted_frame_count ?? 0) >= 3 ? <Button size="sm" variant="primary" busy={busy} onClick={() => void solveArucoCalibration()}>Solve & Activate</Button> : null}
-                      {activeMap?.id ? <Button size="sm" variant="default" busy={busy} onClick={() => void alignMapFromSfm()}>Align Map (SFM Only)</Button> : null}
                     </div>
                   } 
                 />

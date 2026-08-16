@@ -25,5 +25,4 @@ api_router.include_router(not_found.router)
 
 root_router = APIRouter()
 root_router.include_router(system.health_router)
-root_router.include_router(live_websockets.router, prefix="/ws/v1")
 root_router.include_router(websockets.router, prefix="/ws/v1")

@@ -632,10 +632,43 @@ def align_map_to_aruco_endpoint(request: Request, project_id: str, map_id: str, 
     from scipy.spatial.transform import Rotation
     quaternion = Rotation.from_matrix(rotation_matrix).as_quat().tolist()
     
+    # Extract triangulated markers and update the board calibration layout in W frame
+    try:
+        triangulated = _extract_colmap_markers(container, project_id, sfm_dir, capture_id, float(board_def.get("marker_size_m", 0.035)))
+        if triangulated:
+            scale = float(solution["scale"])
+            rot = rotation_matrix
+            trans = np.array(solution["translation"], dtype=np.float64).reshape(3)
+            real_layout = {}
+            for tm in triangulated:
+                corners_m0 = np.array(tm["corners"], dtype=np.float64)
+                corners_w = (scale * (rot @ corners_m0.T)).T + trans
+                real_layout[str(tm["marker_id"])] = corners_w.tolist()
+            board_def = dict(board_def)
+            board_def["layout"] = real_layout
+            board_def["marker_ids"] = sorted([int(k) for k in real_layout.keys()])
+            if board_def["marker_ids"]:
+                board_def["anchor_id"] = board_def["marker_ids"][0]
+            if board_calibration_id:
+                try:
+                    cal_res = container.catalog.get_resource(project_id, "aruco_board_calibration", board_calibration_id)
+                    cal_res_payload = dict(cal_res)
+                    cal_res_payload["board"] = board_def
+                    artifact = container.artifacts.atomic_write_json(
+                        container.artifacts.project_path(project_id, Path("calibrations/aruco-board") / f"{board_calibration_id}.json"),
+                        cal_res_payload,
+                    )
+                    container.catalog.update_resource(project_id, "aruco_board_calibration", board_calibration_id, payload_patch={"board": board_def, "artifact": artifact})
+                except Exception as ex:
+                    print(f"[ALIGN MAP] Failed updating board cal: {ex}")
+    except Exception as ex:
+        print(f"[ALIGN MAP] Triangulation extraction error: {ex}")
+
     return container.catalog.update_resource(
         project_id, "scene_map", map_id, 
         payload_patch={
             "aruco_board_calibration_id": board_calibration_id,
+            "board_definition": board_def,
             "similarity_s_w_m0": solution,
             "user_transform": {
                 "position": solution["translation"],
@@ -717,6 +750,22 @@ def map_manifest(request: Request, project_id: str, map_id: str, response: Respo
 
     if merged_markers:
         data["registered_markers"] = merged_markers
+        sim = scene_map.get("similarity_s_w_m0")
+        if sim and isinstance(sim, dict) and sim.get("scale"):
+            scale = float(sim["scale"])
+            rot = np.array(sim["rotation"], dtype=np.float64).reshape(3, 3)
+            trans = np.array(sim["translation"], dtype=np.float64).reshape(3)
+            real_layout = {}
+            for tm in merged_markers:
+                corners_m0 = np.array(tm["corners"], dtype=np.float64)
+                corners_w = (scale * (rot @ corners_m0.T)).T + trans
+                real_layout[str(tm["marker_id"])] = corners_w.tolist()
+            if "board_definition" not in data or not isinstance(data.get("board_definition"), dict):
+                data["board_definition"] = {}
+            data["board_definition"]["layout"] = real_layout
+            data["board_definition"]["marker_ids"] = sorted([int(k) for k in real_layout.keys()])
+            data["board_definition"]["dictionary"] = "DICT_4X4_50"
+            data["board_definition"]["marker_size_m"] = nominal_size_m
     return data
 
 

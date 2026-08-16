@@ -226,54 +226,54 @@ def _probe_metrics(container: Any, settings: dict[str, Any], marker_points_m: li
 
 async def _send_probe_images(websocket: WebSocket, frame: Any, sequence: int, metrics: dict[str, Any] | None = None, settings: dict[str, Any] | None = None) -> int:
     image = np.frombuffer(frame.rgb, dtype=np.uint8).reshape(frame.height, frame.width, 3)
-    gray = image.mean(axis=2).astype(np.uint8)
-
-    min_thresh = float((settings or {}).get("minThreshold", 61))
-    max_thresh = float((settings or {}).get("maxThreshold", 169))
-    mid_thresh = (min_thresh + max_thresh) / 2.0
-    blob_color = int((settings or {}).get("blobColor", 0))
-
-    if blob_color == 0:
-        binary = np.where(gray < mid_thresh, np.uint8(255), np.uint8(0))
-    else:
-        binary = np.where(gray > mid_thresh, np.uint8(255), np.uint8(0))
-
     overlay = image.copy()
     keypoints = (metrics or {}).get("keypoints", [])
     tracked = bool((metrics or {}).get("tracked", False))
 
-    try:
-        import cv2
-        for idx, kp in enumerate(keypoints):
-            cx = int(round(float(kp.get("x", 0))))
-            cy = int(round(float(kp.get("y", 0))))
-            diameter = float(kp.get("diameter", 12.0))
-            radius = max(4, int(round(diameter / 2.0)))
+    if cv2 is not None:
+        try:
+            for idx, kp in enumerate(keypoints):
+                cx = int(round(float(kp.get("x", 0))))
+                cy = int(round(float(kp.get("y", 0))))
+                diameter = float(kp.get("diameter", 12.0))
+                radius = max(4, int(round(diameter / 2.0)))
 
-            if tracked and idx < 5:
-                color = (0, 255, 0)
-                label = f"P{idx}"
-            else:
-                color = (255, 140, 0)
-                label = f"B{idx}"
+                if tracked and idx < 5:
+                    color = (0, 255, 0)
+                    label = f"P{idx}"
+                else:
+                    color = (255, 140, 0)
+                    label = f"B{idx}"
 
-            cv2.circle(overlay, (cx, cy), radius, color, 2, cv2.LINE_AA)
-            cv2.circle(overlay, (cx, cy), 2, color, -1, cv2.LINE_AA)
-            cv2.putText(overlay, label, (cx + radius + 4, max(12, cy - 2)), cv2.FONT_HERSHEY_SIMPLEX, 0.45, color, 1, cv2.LINE_AA)
-            
-        from spatial_probe_atlas.pipelines.aruco import detect_aruco
-        aruco_detections, raw = detect_aruco(frame.rgb, frame.width, frame.height, "DICT_4X4_50", None)
-        if raw:
-            corners, ids = raw
-            if ids is not None:
-                cv2.aruco.drawDetectedMarkers(overlay, corners, ids)
-    except Exception as e:
-        print(f"[Probe Tuning Overlay Error] {e}")
+                cv2.circle(overlay, (cx, cy), radius, color, 2, cv2.LINE_AA)
+                cv2.circle(overlay, (cx, cy), 2, color, -1, cv2.LINE_AA)
+                cv2.putText(overlay, label, (cx + radius + 4, max(12, cy - 2)), cv2.FONT_HERSHEY_SIMPLEX, 0.45, color, 1, cv2.LINE_AA)
+                
+            from spatial_probe_atlas.pipelines.aruco import detect_aruco
+            aruco_detections, raw = detect_aruco(frame.rgb, frame.width, frame.height, "DICT_4X4_50", None)
+            if raw:
+                corners, ids = raw
+                if ids is not None:
+                    cv2.aruco.drawDetectedMarkers(overlay, corners, ids)
+        except Exception as e:
+            print(f"[Probe Tuning Overlay Error] {e}")
 
-    for kind, value in (("raw", image), ("binary", binary), ("overlay", overlay)):
-        payload = _png(value)
-        await _send_binary(websocket, {"protocol_version": 1, "type": "probe.diagnostic_image", "seq": sequence, "timestamp": datetime.now(UTC).isoformat(), "kind": kind, "encoding": "png", "width": frame.width, "height": frame.height}, payload)
-        sequence += 1
+    payload, fmt = _encode_frame(overlay, is_rgb=True, quality=80)
+    await _send_binary(
+        websocket,
+        {
+            "protocol_version": 1,
+            "type": "probe.diagnostic_image",
+            "seq": sequence,
+            "timestamp": datetime.now(UTC).isoformat(),
+            "kind": "overlay",
+            "encoding": fmt,
+            "width": frame.width,
+            "height": frame.height,
+        },
+        payload,
+    )
+    sequence += 1
     return sequence
 
 
@@ -282,10 +282,6 @@ async def probe_tuning(websocket: WebSocket, project_id: str) -> None:
     if not await _authorize(websocket):
         return
     container = websocket.app.state.container
-    if container.camera.owner == "live_tracking":
-        await websocket.send_json(_envelope("error", 0, {"code": "CAMERA_OWNER_CONFLICT", "message": "Live tracking and probe tuning are mutually exclusive."}))
-        await websocket.close(code=4409)
-        return
     sequence = 0
     previous = -1
     settings = dict(DEFAULT_BLOB_DETECTOR)
@@ -318,10 +314,11 @@ async def probe_tuning(websocket: WebSocket, project_id: str) -> None:
 
             latest = container.camera.latest_frame
             if latest is None or latest.sequence <= previous:
-                await asyncio.sleep(0.05)
+                await asyncio.sleep(0.03)
                 continue
                 
             previous = latest.sequence
+            metrics = _probe_metrics(container, settings, marker_points_m, marker_ids)
             try:
                 await websocket.send_json(_envelope("probe.tuning_result", sequence, metrics))
                 sequence += 1
@@ -359,18 +356,29 @@ async def registration_tracking(websocket: WebSocket, project_id: str, registrat
             map_id = project.get("active_map_id")
             probe_calib_id = project.get("active_probe_calibration_id")
 
-        if (map_id or (registration and registration.get("is_aruco_mode"))) and probe_calib_id:
-            probe_calibration = container.catalog.get_resource(project_id, "probe_calibration", probe_calib_id)
-            scene_map = container.catalog.get_resource(project_id, "scene_map", map_id) if map_id else None
-            similarity = {"scale": 1.0, "rotation": np.eye(3).reshape(-1).tolist(), "translation": [0,0,0]}
-            
-            from spatial_probe_atlas.pipelines.tracking.factory import create_tracking_pipeline
+        probe_calibration = None
+        if probe_calib_id:
             try:
-                pipeline = create_tracking_pipeline(scene_map, similarity, probe_calibration, container.artifacts.root, registration=registration)
-            except Exception as exc:
-                print(f"[TRACKING] Error creating tracking pipeline: {exc}")
-                pipeline = None
-        else:
+                probe_calibration = container.catalog.get_resource(project_id, "probe_calibration", probe_calib_id)
+            except Exception:
+                probe_calibration = None
+        if not probe_calibration:
+            # Fallback default calibration so camera tracking operates independently of probe calibration
+            probe_calibration = {
+                "probe": {"model": "polaris_5_blob", "marker_frame": "M", "tip_frame": "P", "marker_points_m": [], "t_marker_tip": [1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1]},
+                "blob_detector": {"min_threshold": 50, "max_threshold": 255, "min_area": 10, "max_area": 500, "min_circularity": 0.6, "min_convexity": 0.8, "min_inertia_ratio": 0.4}
+            }
+
+        scene_map = container.catalog.get_resource(project_id, "scene_map", map_id) if map_id else None
+        similarity = {"scale": 1.0, "rotation": np.eye(3).reshape(-1).tolist(), "translation": [0,0,0]}
+        if scene_map and scene_map.get("similarity_s_w_m0"):
+            similarity = scene_map["similarity_s_w_m0"]
+        
+        from spatial_probe_atlas.pipelines.tracking.factory import create_tracking_pipeline
+        try:
+            pipeline = create_tracking_pipeline(scene_map, similarity, probe_calibration, container.artifacts.root, registration=registration)
+        except Exception as exc:
+            print(f"[TRACKING] Error creating tracking pipeline: {exc}")
             pipeline = None
 
         previous = -1

@@ -7,9 +7,14 @@ from spatial_probe_atlas.domain.errors import AppError
 
 
 def create_tracking_pipeline(scene_map: dict[str, Any] | None, similarity: dict[str, Any], calibration: dict[str, Any], artifact_root: Path, registration: dict[str, Any] | None = None) -> Any:
-    if registration and registration.get("is_aruco_mode"):
+    board_def = (registration.get("board_definition") if registration else None) or (scene_map.get("board_definition") if scene_map else None)
+    is_aruco = bool(registration and registration.get("is_aruco_mode")) or bool(board_def and board_def.get("layout"))
+    if is_aruco:
+        reg_dict = dict(registration or {})
+        if board_def:
+            reg_dict["board_definition"] = board_def
         from .aruco import ArucoTrackingPipeline
-        return ArucoTrackingPipeline(registration, calibration)
+        return ArucoTrackingPipeline(reg_dict, calibration)
 
     if not scene_map:
         raise AppError("SCENE_MAP_REQUIRED", "Scene map is required for non-ArUco tracking modes.", status_code=409)

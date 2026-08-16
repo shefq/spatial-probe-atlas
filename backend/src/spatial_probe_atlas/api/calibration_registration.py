@@ -240,7 +240,8 @@ async def capture_joint_frames(request: Request, project_id: str, body: dict[str
 
 @router.post("/projects/{project_id}/aruco-calibrations/solve", status_code=201)
 def solve_joint_calibration(request: Request, project_id: str, body: dict[str, Any]) -> dict[str, Any]:
-    from spatial_probe_atlas.pipelines.aruco import optimize_joint, finalize_board_layout, marker_object_points
+    from spatial_probe_atlas.pipelines.aruco import estimate_board_pose
+    from spatial_probe_atlas.pipelines.triangulation import match_and_triangulate_probe
     import cv2 # type: ignore
     container = request.app.state.container
     capture_id = str(body.get("probe_capture_id", ""))
@@ -251,81 +252,103 @@ def solve_joint_calibration(request: Request, project_id: str, body: dict[str, A
         raise AppError("PROBE_CALIBRATION_VIEWS_INSUFFICIENT", "At least 3 valid joint views are required.", status_code=422, details={"accepted_views": len(accepted)})
 
     marker_ids = body.get("marker_ids", [6, 7, 5])
-    anchor_id = body.get("anchor_id", 7)
     nominal_marker_size_m = body.get("nominal_marker_size_m", 0.020)
+    project = container.catalog.get_project(project_id)
+    active_map_id = project.get("active_map_id")
 
-    board_samples: dict[int, list[np.ndarray]] = {m: [] for m in marker_ids}
+    if not active_map_id:
+        raise AppError("ACTIVE_MAP_REQUIRED", "An active map with SFM ArUco poses is required for this step.", status_code=400)
+
+    scene_map = container.catalog.get_resource(project_id, "scene_map", active_map_id)
+    sim = scene_map.get("similarity_s_w_m0")
+    if not sim or not isinstance(sim, dict) or not sim.get("scale"):
+        raise AppError("MAP_NOT_ALIGNED", "The active map must be metric and aligned.", status_code=400)
+    
+    # Extract Colmap markers
+    from spatial_probe_atlas.api.projects_mapping import _extract_colmap_markers
+    map_dir = container.artifacts.project_path(project_id, Path("maps") / active_map_id)
+    triangulated = _extract_colmap_markers(container, project_id, map_dir, scene_map.get("parent_id"), float(nominal_marker_size_m))
+    
+    if not triangulated:
+        raise AppError("ARUCO_NOT_FOUND_IN_MAP", "Could not extract ArUco markers from the active SFM map.", status_code=400)
+    
+    scale = float(sim["scale"])
+    rot = np.array(sim["rotation"], dtype=np.float64).reshape(3, 3)
+    trans = np.array(sim["translation"], dtype=np.float64).reshape(3)
+    
+    real_layout = {}
+    for tm in triangulated:
+        corners_m0 = np.array(tm["corners"], dtype=np.float64)
+        corners_w = (scale * (rot @ corners_m0.T)).T + trans
+        real_layout[int(tm["marker_id"])] = corners_w
+        
     joint_frames = []
-
+    
     for item in accepted:
         diag = item["diagnostics"]
         K = np.asarray(item["intrinsic_matrix"], dtype=float).reshape(3, 3)
-        detections = diag.get("aruco_detections", {})
+        detections = {int(k): np.asarray(v, dtype=np.float64) for k, v in diag.get("aruco_detections", {}).items()}
         
-        # We need the 3D pose of the probe for optimize_joint
-        ordered_keypoints = np.asarray([[p["x"], p["y"]] for p in diag["keypoints"][:5]], dtype=np.float32)
-        obj_points = np.asarray(PROBE_POINTS, dtype=np.float32)
-        success, rvec, tvec = cv2.solvePnP(obj_points, ordered_keypoints, K, None, flags=cv2.SOLVEPNP_EPNP)
-        
-        if not success or str(anchor_id) not in detections:
+        # Estimate camera pose using the SFM board layout
+        board_pose, used_ids = estimate_board_pose(real_layout, detections, K, minimum_markers=1)
+        if board_pose is None:
             continue
             
+        ordered_keypoints = np.asarray([[p["x"], p["y"]] for p in diag["keypoints"][:5]], dtype=np.float32)
+        
         joint_frames.append({
             "K": K,
-            "probe_pose": {"rvec": rvec, "tvec": tvec},
-            "detections": {int(k): v for k, v in detections.items()},
+            "pose": {"R": cv2.Rodrigues(board_pose.rvec)[0], "t": board_pose.tvec},
+            "keypoints": ordered_keypoints
         })
         
-        anchor_pts = marker_object_points(nominal_marker_size_m)
-        from spatial_probe_atlas.pipelines.aruco import estimate_planar_pose, matrix_from_pose, ray_intersection_with_object_plane
-        anchor_pose = estimate_planar_pose(anchor_pts, np.asarray(detections[str(anchor_id)]), K)
-        if anchor_pose is None:
-            continue
-        anchor_to_camera = matrix_from_pose(anchor_pose.rvec, anchor_pose.tvec)
+    if len(joint_frames) < 3:
+        raise AppError("PROBE_CALIBRATION_FAILED", "Not enough frames with successfully estimated camera poses.", status_code=422)
         
-        for m_id in marker_ids:
-            if m_id == anchor_id or str(m_id) not in detections:
-                continue
-            corners_3d = [ray_intersection_with_object_plane(np.asarray(point), K, anchor_to_camera) for point in detections[str(m_id)]]
-            if not any(p is None for p in corners_3d):
-                board_samples[m_id].append(np.asarray(corners_3d, dtype=np.float64))
-
-    min_target = min(len(board_samples[m]) for m in marker_ids if m != anchor_id) if len(marker_ids) > 1 else 1
-    if len(marker_ids) > 1:
-        board_samples[anchor_id] = [marker_object_points(nominal_marker_size_m)] * min_target
-
-    layout, diagnostics = finalize_board_layout(marker_ids, anchor_id, nominal_marker_size_m, board_samples, 1)
-    if layout is None:
-        raise AppError("ARUCO_LAYOUT_FAILED", "Failed to finalize board layout.", status_code=422, details=diagnostics)
-
-    opt_params = optimize_joint(layout, joint_frames, anchor_id)
-    if opt_params is None:
-        raise AppError("ARUCO_OPTIMIZE_FAILED", "Failed to optimize joint parameters.", status_code=422)
+    # Triangulate probe
+    try:
+        points_3d, diagnostics = match_and_triangulate_probe(joint_frames)
+    except Exception as e:
+        raise AppError("TRIANGULATION_FAILED", f"Failed to triangulate probe points: {e}", status_code=422)
+        
+    # Center the points
+    centroid = np.mean(points_3d, axis=0)
+    centered_points = points_3d - centroid
+    # Set tip to an arbitrary offset from centroid for now (e.g., +15cm in Z)
+    tip_offset = [0.0, 0.0, 0.15]
     
-    alpha = float(opt_params[0])
-    tip_probe = opt_params[1:4].tolist()
-    true_marker_size = nominal_marker_size_m * alpha
-    optimized_layout = {k: (v * alpha).tolist() for k, v in layout.items()}
-
-    # Create probe calibration
-    portable_probe = _portable_calibration("ArUco Joint Probe", len(frames), len(accepted), container.catalog.get_project(project_id)["name"])
-    portable_probe["probe"]["t_marker_tip"] = [1, 0, 0, tip_probe[0], 0, 1, 0, tip_probe[1], 0, 0, 1, tip_probe[2], 0, 0, 0, 1]
+    portable_probe = _portable_calibration("ArUco SFM Probe", len(frames), len(accepted), project["name"])
+    portable_probe["probe"]["marker_points_m"] = centered_points.tolist()
+    portable_probe["probe"]["t_marker_tip"] = [1, 0, 0, tip_offset[0], 0, 1, 0, tip_offset[1], 0, 0, 1, tip_offset[2], 0, 0, 0, 1]
     
-    # Create ArUco registration definition
     board_def = {
-        "dictionary": "DICT_4X4_50", "marker_ids": marker_ids, "anchor_id": anchor_id,
-        "marker_size_m": true_marker_size, "layout": optimized_layout
+        "dictionary": "DICT_4X4_50", 
+        "marker_ids": sorted(list(real_layout.keys())), 
+        "anchor_id": sorted(list(real_layout.keys()))[0],
+        "marker_size_m": float(nominal_marker_size_m), 
+        "layout": {k: v.tolist() for k, v in real_layout.items()}
     }
-    
-    # Include board calibration data in the same probe calibration data as requested
     portable_probe["board"] = board_def
     
     probe_id = portable_probe["calibration_id"]
     artifact = container.artifacts.atomic_write_json(container.artifacts.project_path(project_id, Path("calibrations/probe") / f"{probe_id}.json"), portable_probe)
     probe_res = container.catalog.create_resource(project_id, "probe_calibration", state="valid", name=portable_probe["name"], parent_id=capture_id, resource_id=probe_id, payload={**portable_probe, "artifact": artifact, "checksum": _checksum(portable_probe), "source_frame_ids": [item["id"] for item in accepted]})
     
-    # No map is actually needed for pure ArUco live painting, but we create a "Registration" so tracking has context
-    reg = container.catalog.create_resource(project_id, "registration", state="active", name="ArUco Joint Registration", payload={"map_id": None, "probe_calibration_id": probe_id, "board_definition": board_def, "observation_count": len(joint_frames), "validation_status": "passed", "rms_residual_m": 0.0, "max_residual_m": 0.0, "is_aruco_mode": True})
+    reg_payload = {
+        "map_id": active_map_id,
+        "probe_calibration_id": probe_id,
+        "board_definition": board_def,
+        "observation_count": len(joint_frames),
+        "validation_status": "passed",
+        "rms_residual_m": 0.0,
+        "max_residual_m": 0.0,
+        "is_aruco_mode": True,
+        "scale": float(sim["scale"]),
+        "t_w_b": sim.get("translation"),
+        "similarity_s_w_m0": sim
+    }
+
+    reg = container.catalog.create_resource(project_id, "registration", state="active", name="ArUco SFM Registration", payload=reg_payload)
 
     container.catalog.update_resource(project_id, "probe_capture", capture_id, state="ready")
     if bool(body.get("activate", True)):
@@ -563,7 +586,80 @@ def create_registration(request: Request, project_id: str, body: RegistrationCre
     calibration_id = body.probe_calibration_id or project["active_probe_calibration_id"]
     if not map_id:
         raise AppError("ACTIVE_MAP_REQUIRED", "Activate a map before creating registration.", status_code=409)
-    return request.app.state.container.catalog.create_resource(project_id, "registration", state="draft", name=body.name, payload={"map_id": map_id, "map_revision": request.app.state.container.catalog.get_resource(project_id, "scene_map", map_id)["revision"], "probe_calibration_id": calibration_id, "board_definition": body.board_definition or DEFAULT_BOARD, "observation_count": 0, "validation_status": "not_run"})
+    
+    scene_map = request.app.state.container.catalog.get_resource(project_id, "scene_map", map_id)
+    board_def = body.board_definition
+    if not board_def and scene_map.get("aruco_board_calibration_id"):
+        try:
+            b_cal = request.app.state.container.catalog.get_resource(project_id, "aruco_board_calibration", scene_map["aruco_board_calibration_id"])
+            board_def = b_cal.get("board")
+        except Exception:
+            pass
+    if not board_def:
+        board_def = DEFAULT_BOARD
+
+    sim = scene_map.get("similarity_s_w_m0")
+    if sim and isinstance(sim, dict) and sim.get("scale"):
+        try:
+            from spatial_probe_atlas.api.projects_mapping import _extract_colmap_markers
+            from pathlib import Path
+            import numpy as np
+            import copy
+            map_dir = request.app.state.container.artifacts.project_path(project_id, Path("maps") / map_id)
+            triangulated_markers = _extract_colmap_markers(request.app.state.container, project_id, map_dir, scene_map.get("parent_id"), float(board_def.get("marker_size_m", 0.035)))
+            if triangulated_markers:
+                scale = float(sim["scale"])
+                rot = np.array(sim["rotation"], dtype=np.float64).reshape(3, 3)
+                trans = np.array(sim["translation"], dtype=np.float64).reshape(3)
+                new_layout = {}
+                for tm in triangulated_markers:
+                    corners_m0 = np.array(tm["corners"], dtype=np.float64)
+                    # Transform from M0 to W frame
+                    corners_w = (scale * (rot @ corners_m0.T)).T + trans
+                    new_layout[str(tm["marker_id"])] = corners_w.tolist()
+                
+                board_def = copy.deepcopy(board_def)
+                if "layout" not in board_def:
+                    board_def["layout"] = {}
+                board_def["layout"].update(new_layout)
+                
+                existing_ids = set(board_def.get("marker_ids", []))
+                existing_ids.update(tm["marker_id"] for tm in triangulated_markers)
+                board_def["marker_ids"] = sorted(list(existing_ids))
+        except Exception as e:
+            print(f"[REGISTRATION] Failed to override board layout with SFM markers: {e}")
+
+        payload = {
+            "map_id": map_id,
+            "map_revision": scene_map["revision"],
+            "probe_calibration_id": calibration_id,
+            "board_definition": board_def,
+            "observation_count": int(sim.get("inlier_view_count", 1)),
+            "validation_status": "passed",
+            "similarity_s_w_m0": sim,
+            "scale": float(sim["scale"]),
+            "t_w_b": sim.get("translation"),
+            "rms_residual_m": float(sim.get("rms_residual_m", 0.001)),
+            "max_residual_m": float(sim.get("max_residual_m", 0.002)),
+        }
+        state = "valid"
+    else:
+        payload = {
+            "map_id": map_id,
+            "map_revision": scene_map["revision"],
+            "probe_calibration_id": calibration_id,
+            "board_definition": board_def,
+            "observation_count": 0,
+            "validation_status": "not_run",
+        }
+        state = "draft"
+
+    created = request.app.state.container.catalog.create_resource(
+        project_id, "registration", state=state, name=body.name, payload=payload
+    )
+    if state == "valid" and calibration_id:
+        request.app.state.container.catalog.update_project(project_id, active_registration_id=created["id"])
+    return created
 
 
 @router.get("/projects/{project_id}/registrations/{registration_id}")
@@ -635,6 +731,7 @@ def solve_registration(request: Request, project_id: str, registration_id: str) 
 @router.post("/projects/{project_id}/registrations/{registration_id}/validate")
 def validate_registration(request: Request, project_id: str, registration_id: str, body: RegistrationValidationRequest) -> dict[str, Any]:
     container = request.app.state.container
+
     registration = container.catalog.get_resource(project_id, "registration", registration_id)
     if registration["state"] not in {"solved", "validated", "active"}:
         raise AppError("REGISTRATION_NOT_SOLVED", "Solve the registration before validation.", status_code=409)

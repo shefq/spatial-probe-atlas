@@ -528,31 +528,35 @@ export class ViewerEngine implements Contract {
 
     if (value.board_definition?.layout) {
       const layout = value.board_definition.layout as Record<string, number[][]>;
+      const boardGroup = new Group();
+
+      // Check if all markers are coplanar on Z=0
+      let allCoplanarZ0 = true;
       let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
       for (const corners of Object.values(layout)) {
         for (const pt of corners) {
+          if (Math.abs(pt[2] ?? 0) > 0.005) allCoplanarZ0 = false;
           if (pt[0] < minX) minX = pt[0];
           if (pt[1] < minY) minY = pt[1];
           if (pt[0] > maxX) maxX = pt[0];
           if (pt[1] > maxY) maxY = pt[1];
         }
       }
-      if (minX !== Infinity) {
-        const boardGroup = new Group();
+
+      // Draw base board plate only if markers are coplanar on a planar board
+      if (allCoplanarZ0 && minX !== Infinity && Object.keys(layout).length > 1) {
         const margin = 0.03;
         const width = Math.max(0.04, maxX - minX + 2 * margin);
         const height = Math.max(0.04, maxY - minY + 2 * margin);
         const centerX = (minX + maxX) / 2;
         const centerY = (minY + maxY) / 2;
 
-        // 1. Base board plate (Bright White/Slate surface, visible from both sides)
         const planeGeo = new BoxGeometry(width, height, 0.003);
         const planeMat = new MeshBasicMaterial({ color: 0xe2e8f0, side: DoubleSide });
         const plane = new Mesh(planeGeo, planeMat);
         plane.position.set(centerX, centerY, -0.0015);
         boardGroup.add(plane);
 
-        // 2. Outer board cyan border outline
         const borderPts = [
           new Vector3(centerX - width / 2, centerY - height / 2, 0.0002),
           new Vector3(centerX + width / 2, centerY - height / 2, 0.0002),
@@ -562,44 +566,101 @@ export class ViewerEngine implements Contract {
         ];
         const borderGeom = new BufferGeometry().setFromPoints(borderPts);
         boardGroup.add(new Line(borderGeom, new LineBasicMaterial({ color: 0x00f0ff, linewidth: 3 })));
+      }
 
-        // 3. ArUco markers (filled dark square + thick vibrant outline + yellow orientation dot)
-        const palette = [0xff3b30, 0x34c759, 0x007aff, 0xaf52de, 0xff9500];
-        let markerIndex = 0;
-        for (const corners of Object.values(layout)) {
-          if (corners.length < 4) continue;
-          const color = palette[markerIndex % palette.length];
-          const P0 = new Vector3(corners[0][0], corners[0][1], 0.001);
-          const P1 = new Vector3(corners[1][0], corners[1][1], 0.001);
-          const P2 = new Vector3(corners[2][0], corners[2][1], 0.001);
-          const P3 = new Vector3(corners[3][0], corners[3][1], 0.001);
+      // Render each ArUco marker in 3D
+      const borderMat = new MeshStandardMaterial({
+        color: 0x39ff14,
+        roughness: 0.2,
+        metalness: 0.1,
+        emissive: 0x18a008,
+        emissiveIntensity: 0.6,
+        side: DoubleSide,
+      });
 
-          // Marker filled dark square
-          const shapeGeom = new BufferGeometry();
-          const verts = new Float32Array([
-            P0.x, P0.y, P0.z, P1.x, P1.y, P1.z, P2.x, P2.y, P2.z,
-            P0.x, P0.y, P0.z, P2.x, P2.y, P2.z, P3.x, P3.y, P3.z,
-          ]);
-          shapeGeom.setAttribute("position", new BufferAttribute(verts, 3));
-          const markerMesh = new Mesh(shapeGeom, new MeshBasicMaterial({ color: 0x1e293b, side: DoubleSide }));
-          boardGroup.add(markerMesh);
+      for (const [mIdStr, corners] of Object.entries(layout)) {
+        if (!corners || corners.length < 4) continue;
+        const P0 = new Vector3(corners[0][0], corners[0][1], corners[0][2] ?? 0.0);
+        const P1 = new Vector3(corners[1][0], corners[1][1], corners[1][2] ?? 0.0);
+        const P2 = new Vector3(corners[2][0], corners[2][1], corners[2][2] ?? 0.0);
+        const P3 = new Vector3(corners[3][0], corners[3][1], corners[3][2] ?? 0.0);
 
-          // Marker colored outline
-          const lineGeom = new BufferGeometry().setFromPoints([P0, P1, P2, P3, P0]);
-          boardGroup.add(new Line(lineGeom, new LineBasicMaterial({ color, linewidth: 3 })));
-
-          // Corner 0 yellow orientation dot
-          const dot = this.sphere(0.004, 0xffd60a);
-          dot.position.copy(P0);
-          boardGroup.add(dot);
-
-          markerIndex++;
+        const v10 = new Vector3().subVectors(P1, P0);
+        const v30 = new Vector3().subVectors(P3, P0);
+        let normal = new Vector3().crossVectors(v10, v30).normalize();
+        if (normal.lengthSq() < 1e-4) {
+          normal.set(0, 0, 1);
         }
 
-        if (value.t_w_b?.length === 16) boardGroup.applyMatrix4(tvw.clone().multiply(new Matrix4().fromArray(value.t_w_b).transpose()));
-        else boardGroup.applyMatrix4(tvw);
-        this.registration.add(boardGroup);
+        // Marker dark square
+        const shapeGeom = new BufferGeometry();
+        const verts = new Float32Array([
+          P0.x, P0.y, P0.z, P1.x, P1.y, P1.z, P2.x, P2.y, P2.z,
+          P0.x, P0.y, P0.z, P2.x, P2.y, P2.z, P3.x, P3.y, P3.z,
+        ]);
+        shapeGeom.setAttribute("position", new BufferAttribute(verts, 3));
+        shapeGeom.computeVertexNormals();
+        const markerMesh = new Mesh(shapeGeom, new MeshBasicMaterial({ color: 0x0f172a, opacity: 0.85, transparent: true, side: DoubleSide }));
+        boardGroup.add(markerMesh);
+
+        // 3D Volumetric 4mm frame
+        const nominalSide = Math.max(P0.distanceTo(P1), 1e-4);
+        const thickness = nominalSide * (4 / 35);
+        const height = nominalSide * (4 / 35);
+
+        const edges: [Vector3, Vector3][] = [
+          [P0, P1],
+          [P1, P2],
+          [P2, P3],
+          [P3, P0],
+        ];
+
+        edges.forEach(([A, B]) => {
+          const edgeVec = new Vector3().subVectors(B, A);
+          const edgeLen = edgeVec.length();
+          if (edgeLen < 1e-6) return;
+          const edgeDir = edgeVec.clone().normalize();
+          const inDir = new Vector3().crossVectors(normal, edgeDir).normalize();
+
+          const boxGeom = new BoxGeometry(thickness, height, edgeLen);
+          const boxMesh = new Mesh(boxGeom, borderMat);
+
+          const boxCenter = new Vector3()
+            .addVectors(A, B)
+            .multiplyScalar(0.5)
+            .addScaledVector(inDir, thickness * 0.5)
+            .addScaledVector(normal, height * 0.5);
+
+          const rotMat = new Matrix4().makeBasis(inDir, normal, edgeDir);
+          boxMesh.setRotationFromMatrix(rotMat);
+          boxMesh.position.copy(boxCenter);
+          boardGroup.add(boxMesh);
+        });
+
+        // Corner orientation spheres
+        const topP0 = P0.clone().addScaledVector(normal, height);
+        const dot0 = this.sphere(nominalSide * (4.5 / 35), 0xffd60a);
+        dot0.position.copy(topP0);
+        boardGroup.add(dot0);
+
+        [P1, P2, P3].forEach((p) => {
+          const topP = p.clone().addScaledVector(normal, height);
+          const dot = this.sphere(nominalSide * (3.5 / 35), 0x39ff14);
+          dot.position.copy(topP);
+          boardGroup.add(dot);
+        });
+
+        // Floating label
+        const sprite = makeTextSprite(`#${mIdStr}`, "#39ff14");
+        const centerPt = new Vector3().addVectors(P0, P2).multiplyScalar(0.5);
+        sprite.position.copy(centerPt).addScaledVector(normal, height + nominalSide * 0.35);
+        sprite.scale.set(nominalSide * 0.55, nominalSide * 0.55, 1);
+        boardGroup.add(sprite);
       }
+
+      if (value.t_w_b?.length === 16) boardGroup.applyMatrix4(tvw.clone().multiply(new Matrix4().fromArray(value.t_w_b).transpose()));
+      else boardGroup.applyMatrix4(tvw);
+      this.registration.add(boardGroup);
     } else {
       const board = createLabeledAxes(.12);
       if (value.t_w_b?.length === 16) board.applyMatrix4(tvw.clone().multiply(new Matrix4().fromArray(value.t_w_b).transpose()));

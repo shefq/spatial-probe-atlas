@@ -146,8 +146,13 @@ class CpuTrackingPipeline:
 
     def _probe_pose(self, frame: NormalizedCameraFrame, gray_image: np.ndarray | None = None) -> tuple[np.ndarray | None, int, float, str | None, int]:
         cv2 = self.cv2
-        marker_points = np.asarray(self.calibration["probe"]["marker_points_m"], dtype=np.float32)
-        result = detect_blobs(frame.rgb, frame.width, frame.height, self.calibration["blob_detector"], intrinsic_matrix=frame.intrinsic_matrix, marker_points_m=marker_points, gray_image=gray_image)
+        probe_info = (self.calibration or {}).get("probe", {})
+        marker_points_raw = probe_info.get("marker_points_m", [])
+        if not marker_points_raw or len(marker_points_raw) < 5:
+            return None, 0, math.inf, "probe_not_calibrated", 0
+        marker_points = np.asarray(marker_points_raw, dtype=np.float32)
+        detector_cfg = (self.calibration or {}).get("blob_detector", {})
+        result = detect_blobs(frame.rgb, frame.width, frame.height, detector_cfg, intrinsic_matrix=frame.intrinsic_matrix, marker_points_m=marker_points, gray_image=gray_image)
         points = result.get("keypoints", [])
         candidate_count = len(points)
         if candidate_count < 5:
