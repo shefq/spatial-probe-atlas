@@ -39,7 +39,14 @@ class ArtifactStore:
         try:
             with os.fdopen(fd, "wb") as handle:
                 handle.write(content); handle.flush(); os.fsync(handle.fileno())
-            os.replace(temp_name, path)
+            for attempt in range(50):
+                try:
+                    os.replace(temp_name, path)
+                    break
+                except (PermissionError, OSError):
+                    if attempt == 49:
+                        raise
+                    time.sleep(0.01)
         finally:
             try:
                 Path(temp_name).unlink(missing_ok=True)

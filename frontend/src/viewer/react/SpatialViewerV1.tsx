@@ -109,7 +109,7 @@ export const SpatialViewer = forwardRef<SpatialViewerHandle, SpatialViewerProps>
     void start();
     const metricsTimer = window.setInterval(() => { if (!document.hidden && engineRef.current) metricsRef.current?.(engineRef.current.getMetrics()); }, 500);
     return () => { cancelled = true; cancelAnimationFrame(nextFrame); clearInterval(metricsTimer); observer?.disconnect(); if (engineRef.current === engine) engineRef.current = null; engine.dispose(); };
-  }, [generation]);
+  }, []);
 
   // Keep handler current if projectId changes without re-mounting
   useEffect(() => {
@@ -121,7 +121,7 @@ export const SpatialViewer = forwardRef<SpatialViewerHandle, SpatialViewerProps>
     let active = true; setLoading(true); setError(null);
     engineRef.current.loadMap({
       projectId, mapId,
-      manifestUrl: `/api/v1/projects/${projectId}/maps/${mapId}/point-cloud/manifest`,
+      manifestUrl: `/api/v1/projects/${projectId}/maps/${mapId}/point-cloud/manifest?t=${Date.now()}`,
       tileUrl: (tileId) => `/api/v1/projects/${projectId}/maps/${mapId}/point-cloud/tiles/${encodeURIComponent(tileId)}`,
     }).catch((value) => { if (active) setError(value instanceof Error ? value.message : "The point cloud could not be loaded."); }).finally(() => { if (active) setLoading(false); });
     return () => { active = false; };

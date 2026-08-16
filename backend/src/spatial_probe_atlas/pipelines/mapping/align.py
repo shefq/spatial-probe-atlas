@@ -18,7 +18,12 @@ import numpy as np
 
 from spatial_probe_atlas.domain.errors import AppError
 from spatial_probe_atlas.domain.transforms import solve_similarity
-from spatial_probe_atlas.pipelines.aruco import estimate_board_pose, detect_aruco
+from spatial_probe_atlas.pipelines.aruco import (
+    estimate_board_pose,
+    detect_aruco,
+    marker_object_points,
+    estimate_planar_pose,
+)
 
 
 MIN_ALIGNMENT_VIEWS = 3
@@ -305,3 +310,109 @@ def align_map_to_aruco(
             map_camera_center=c_m0, board_camera_center=c_w, marker_ids=used_ids,
         ))
     return refine_similarity_from_views(views)
+
+
+def extract_scene_markers(
+    artifact_root: Path,
+    sfm_dir: Path,
+    frames_metadata: list[dict[str, Any]],
+    nominal_marker_size_m: float = 0.035,
+    dictionary_name: str = "DICT_4X4_50",
+) -> list[dict[str, Any]]:
+    """Scan registered SfM views, detect all ArUco markers, and triangulate their 3D corners in M0."""
+    import pycolmap
+
+    rec_dir = sfm_dir
+    if not (rec_dir / "cameras.bin").exists() and not (rec_dir / "cameras.txt").exists():
+        candidates = list(sfm_dir.glob("**/cameras.bin")) + list(sfm_dir.glob("**/cameras.txt"))
+        if candidates:
+            rec_dir = candidates[0].parent
+    if not (rec_dir / "cameras.bin").exists() and not (rec_dir / "cameras.txt").exists():
+        return []
+
+    try:
+        model = pycolmap.Reconstruction(str(rec_dir))
+    except Exception:
+        return []
+
+    # Map marker_id -> list of (camera_center_m0, list_of_4_unit_rays_m0)
+    marker_rays: dict[int, list[tuple[np.ndarray, list[np.ndarray]]]] = {}
+
+    for _, image in sorted(model.images.items()):
+        frame = _frame_for_image(image.name, frames_metadata)
+        if frame is None:
+            continue
+        rgb = _read_rgb(artifact_root, frame)
+        if rgb is None:
+            continue
+        try:
+            r_c_m0, t_c_m0, c_m0 = _camera_pose(image)
+            camera = model.cameras[image.camera_id]
+            k_matrix = np.asarray(camera.calibration_matrix(), dtype=np.float64).reshape(3, 3)
+            k_inv = np.linalg.inv(k_matrix)
+        except Exception:
+            continue
+
+        detections, _ = detect_aruco(rgb, int(frame["width"]), int(frame["height"]), dictionary_name)
+        if not detections:
+            continue
+
+        for marker_id, img_corners in detections.items():
+            corners_arr = np.asarray(img_corners, dtype=np.float64).reshape(4, 2)
+            rays_4 = []
+            for j in range(4):
+                px = np.array([corners_arr[j, 0], corners_arr[j, 1], 1.0], dtype=np.float64)
+                ray_c = k_inv @ px
+                ray_m0 = r_c_m0.T @ ray_c
+                norm = np.linalg.norm(ray_m0)
+                if norm > 1e-8:
+                    ray_m0 /= norm
+                rays_4.append(ray_m0)
+            marker_rays.setdefault(int(marker_id), []).append((c_m0, rays_4))
+
+    results: list[dict[str, Any]] = []
+    for marker_id in sorted(marker_rays.keys()):
+        obs = marker_rays[marker_id]
+        if not obs:
+            continue
+
+        corners_3d = []
+        for j in range(4):
+            if len(obs) >= 2:
+                # Solve least-squares ray intersection: sum (I - v v^T) X = sum (I - v v^T) o
+                a_mat = np.zeros((3, 3), dtype=np.float64)
+                b_vec = np.zeros(3, dtype=np.float64)
+                for o, rays in obs:
+                    v = rays[j]
+                    proj = np.eye(3) - np.outer(v, v)
+                    a_mat += proj
+                    b_vec += proj @ o
+                try:
+                    pt_3d = np.linalg.lstsq(a_mat, b_vec, rcond=None)[0]
+                except Exception:
+                    pt_3d = obs[0][0] + obs[0][1][j] * 0.5
+            else:
+                # Single view: place along ray at 0.5m distance from camera center
+                pt_3d = obs[0][0] + obs[0][1][j] * 0.5
+            corners_3d.append(pt_3d)
+
+        corners_arr = np.stack(corners_3d, axis=0)
+        center = np.mean(corners_arr, axis=0)
+        v1 = corners_arr[1] - corners_arr[0]
+        v2 = corners_arr[3] - corners_arr[0]
+        normal_raw = np.cross(v1, v2)
+        norm_val = np.linalg.norm(normal_raw)
+        normal = (normal_raw / norm_val) if norm_val > 1e-6 else np.array([0.0, 0.0, 1.0])
+
+        results.append({
+            "id": int(marker_id),
+            "marker_id": int(marker_id),
+            "corners": [[float(coord) for coord in pt] for pt in corners_arr],
+            "center": [float(coord) for coord in center],
+            "normal": [float(coord) for coord in normal],
+            "observation_count": len(obs),
+        })
+
+    return results
+
+

@@ -145,7 +145,6 @@ async def session_tracking(websocket: WebSocket, project_id: str, session_id: st
                 if command == "paint.point":
                     try:
                         from .websockets import _encode_frame
-                        import numpy as np
                         save_image = bool(data.get("save_image", False))
                         image_bytes = None
                         image_intrinsics = None

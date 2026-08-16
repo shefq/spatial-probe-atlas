@@ -1,6 +1,6 @@
 import {
   AmbientLight, AxesHelper, Box3, BoxGeometry, BufferAttribute, BufferGeometry, CanvasTexture, Color, DirectionalLight, DoubleSide, GridHelper, Group,
-  Line, LineBasicMaterial, LineSegments, Matrix4, Mesh, MeshBasicMaterial, PerspectiveCamera, Points, PointsMaterial, Quaternion, Raycaster, Scene,
+  Line, LineBasicMaterial, LineSegments, Matrix4, Mesh, MeshBasicMaterial, MeshStandardMaterial, PerspectiveCamera, Points, PointsMaterial, Quaternion, Raycaster, Scene,
   SphereGeometry, Sprite, SpriteMaterial, SRGBColorSpace, Vector2, Vector3, WebGLRenderer,
 } from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
@@ -9,7 +9,7 @@ import { MTLLoader } from "three/addons/loaders/MTLLoader.js";
 import { OBJLoader } from "three/addons/loaders/OBJLoader.js";
 import { PLYLoader } from "three/addons/loaders/PLYLoader.js";
 import type { PaintedPath, PaintedPoint, TrackingViewFrame } from "../../api/types";
-import { decodeV1Tile, normalizeManifest, selectV1Tiles } from "../point-cloud/v1";
+import { decodeV1Tile, normalizeManifest, selectV1Tiles, type MarkerItem } from "../point-cloud/v1";
 import type { CameraItem, MapTransformData, PaintDataDelta, PointCloudSource, RegistrationView, TransformMode, ViewerEngine as Contract, ViewerFilters, ViewerMetrics, ViewerMode, ViewerOptions, ViewerSelection } from "./types";
 
 // Identity matrix perfectly matches Open3D: +X right, +Y up, +Z out of screen. (Board is vertical).
@@ -116,6 +116,7 @@ export class ViewerEngine implements Contract {
   private readonly objMesh = new Group();
   private readonly transformPivot = new Group();
   private readonly camerasGroup = new Group();
+  private readonly markersGroup = new Group();
   private readonly registration = new Group();
   private readonly tracking = new Group();
   private readonly paint = new Group();
@@ -248,28 +249,29 @@ export class ViewerEngine implements Contract {
     if (!response.ok) throw new Error(`Point-cloud manifest failed (${response.status}).`);
     const rawJson = await response.json();
     const manifest = normalizeManifest(rawJson);
-    if ((rawJson as any).userTransform) {
-      const { position, quaternion, scale } = (rawJson as any).userTransform;
+    const userTransform = (rawJson as any).userTransform;
+    const mapTransform = T_V_W.clone();
+    if (userTransform) {
+      const { position, quaternion, scale } = userTransform;
       if (position?.length === 3) this.transformPivot.position.set(position[0], position[1], position[2]);
       if (quaternion?.length === 4) this.transformPivot.quaternion.set(quaternion[0], quaternion[1], quaternion[2], quaternion[3]);
       if (typeof scale === "number" && scale > 0) {
         this.transformPivot.scale.set(scale, scale, scale);
         this.prevScale.set(scale, scale, scale);
       }
+    } else if (manifest.coordinateFrame === "M0" && manifest.similaritySWM0) {
+      const { scale, rotation, translation } = manifest.similaritySWM0;
+      if (Number.isFinite(scale) && scale > 0 && rotation?.length === 9 && translation?.length === 3) {
+        const s = new Matrix4().set(
+          scale * rotation[0], scale * rotation[1], scale * rotation[2], translation[0],
+          scale * rotation[3], scale * rotation[4], scale * rotation[5], translation[1],
+          scale * rotation[6], scale * rotation[7], scale * rotation[8], translation[2],
+          0, 0, 0, 1,
+        );
+        mapTransform.multiply(s);
+      }
     }
     this.transformPivot.updateMatrixWorld(true);
-    const mapTransform = T_V_W.clone();
-    if (manifest.coordinateFrame === "M0" && manifest.similaritySWM0) {
-      const { scale, rotation, translation } = manifest.similaritySWM0;
-      if (!(Number.isFinite(scale) && scale > 0 && rotation.length === 9 && translation.length === 3)) throw new Error("Map similarity metadata is invalid.");
-      const s = new Matrix4().set(
-        scale * rotation[0], scale * rotation[1], scale * rotation[2], translation[0],
-        scale * rotation[3], scale * rotation[4], scale * rotation[5], translation[1],
-        scale * rotation[6], scale * rotation[7], scale * rotation[8], translation[2],
-        0, 0, 0, 1,
-      );
-      mapTransform.multiply(s);
-    }
     this.initialMapTransform.copy(mapTransform);
     this.map.matrixAutoUpdate = false;
     this.map.matrix.copy(mapTransform);
@@ -309,9 +311,121 @@ export class ViewerEngine implements Contract {
       // No COLMAP cameras available for this map — clear any stale pyramids
       this.setCameras([]);
     }
+
+    const rawMarkersArray: any[] = (rawJson as any).registered_markers ?? (rawJson as any).registeredMarkers ?? [];
+    if (rawMarkersArray.length > 0) {
+      this.setMarkers(rawMarkersArray);
+    } else {
+      this.setMarkers([]);
+    }
   }
 
   private camScale = 0.19 / 0.08;
+
+  setMarkers(markers: MarkerItem[]): void {
+    disposeGroup(this.markersGroup);
+    if (this.markersGroup.parent !== this.map) {
+      this.map.add(this.markersGroup);
+    }
+    if (!markers || !markers.length) return;
+
+    markers.forEach((marker) => {
+      if (!marker.corners || marker.corners.length < 4) return;
+      const P0 = new Vector3(marker.corners[0][0], marker.corners[0][1], marker.corners[0][2]);
+      const P1 = new Vector3(marker.corners[1][0], marker.corners[1][1], marker.corners[1][2]);
+      const P2 = new Vector3(marker.corners[2][0], marker.corners[2][1], marker.corners[2][2]);
+      const P3 = new Vector3(marker.corners[3][0], marker.corners[3][1], marker.corners[3][2]);
+
+      const group = new Group();
+
+      // Compute marker plane normal
+      const v10 = new Vector3().subVectors(P1, P0);
+      const v30 = new Vector3().subVectors(P3, P0);
+      const normal = new Vector3().crossVectors(v10, v30).normalize();
+      if (normal.lengthSq() < 1e-4) {
+        normal.set(0, 0, 1);
+      }
+
+      // 1. Semi-transparent dark marker base plate
+      const shapeGeom = new BufferGeometry();
+      const verts = new Float32Array([
+        P0.x, P0.y, P0.z, P1.x, P1.y, P1.z, P2.x, P2.y, P2.z,
+        P0.x, P0.y, P0.z, P2.x, P2.y, P2.z, P3.x, P3.y, P3.z,
+      ]);
+      shapeGeom.setAttribute("position", new BufferAttribute(verts, 3));
+      shapeGeom.computeVertexNormals();
+      const markerMesh = new Mesh(shapeGeom, new MeshBasicMaterial({ color: 0x0f172a, opacity: 0.75, transparent: true, side: DoubleSide }));
+      group.add(markerMesh);
+
+      // 2. 3D Extruded Frame: Exactly 4 mm thickness (in-plane width) and 4 mm height (normal extrusion) relative to 35mm marker
+      const nominalSide = Math.max(P0.distanceTo(P1), 1e-4);
+      const thickness = nominalSide * (4 / 35); // Exact 4 mm thickness
+      const height = nominalSide * (4 / 35);    // Exact 4 mm height
+      const borderMat = new MeshStandardMaterial({
+        color: 0x39ff14,
+        roughness: 0.2,
+        metalness: 0.1,
+        emissive: 0x18a008,
+        emissiveIntensity: 0.6,
+        side: DoubleSide,
+      });
+
+      const edges: [Vector3, Vector3][] = [
+        [P0, P1],
+        [P1, P2],
+        [P2, P3],
+        [P3, P0],
+      ];
+
+      edges.forEach(([A, B]) => {
+        const edgeVec = new Vector3().subVectors(B, A);
+        const edgeLen = edgeVec.length();
+        if (edgeLen < 1e-6) return;
+        const edgeDir = edgeVec.clone().normalize();
+        const inDir = new Vector3().crossVectors(normal, edgeDir).normalize();
+
+        const boxGeom = new BoxGeometry(thickness, height, edgeLen);
+        const boxMesh = new Mesh(boxGeom, borderMat);
+
+        const boxCenter = new Vector3()
+          .addVectors(A, B)
+          .multiplyScalar(0.5)
+          .addScaledVector(inDir, thickness * 0.5)
+          .addScaledVector(normal, height * 0.5);
+
+        const rotMat = new Matrix4().makeBasis(inDir, normal, edgeDir);
+        boxMesh.setRotationFromMatrix(rotMat);
+        boxMesh.position.copy(boxCenter);
+        group.add(boxMesh);
+      });
+
+      // 3. Corner orientation spheres (Yellow on Corner 0 Top-Left, Green on Corners 1, 2, 3) placed on top of 4mm frame
+      const topP0 = P0.clone().addScaledVector(normal, height);
+      const dot0 = this.sphere(nominalSide * (4.5 / 35), 0xffd60a);
+      dot0.position.copy(topP0);
+      group.add(dot0);
+
+      [P1, P2, P3].forEach((p) => {
+        const topP = p.clone().addScaledVector(normal, height);
+        const dot = this.sphere(nominalSide * (3.5 / 35), 0x39ff14);
+        dot.position.copy(topP);
+        group.add(dot);
+      });
+
+      // 4. Marker ID floating text badge above the 4mm frame
+      const markerId = marker.id ?? marker.marker_id;
+      if (markerId !== undefined) {
+        const sprite = makeTextSprite(`#${markerId}`, "#39ff14");
+        const c = marker.center ? new Vector3(...marker.center) : new Vector3().addVectors(P0, P2).multiplyScalar(0.5);
+        sprite.position.copy(c).addScaledVector(normal, height + nominalSide * 0.35);
+        sprite.scale.set(nominalSide * 0.55, nominalSide * 0.55, 1);
+        group.add(sprite);
+      }
+
+      this.markersGroup.add(group);
+    });
+    this.visibility();
+  }
 
   setCameras(cameras: (CameraItem & { lookAt?: [number, number, number] })[]): void {
     disposeGroup(this.camerasGroup);
@@ -686,7 +800,7 @@ export class ViewerEngine implements Contract {
     if (this.disposed) return; this.disposed = true; this.controller?.abort(); cancelAnimationFrame(this.frame); this.controls?.dispose(); this.transformControls?.dispose();
     if (this.onKeyDown) window.removeEventListener("keydown", this.onKeyDown);
     if (this.renderer) { this.renderer.domElement.removeEventListener("webglcontextlost", this.onLost); this.renderer.domElement.removeEventListener("webglcontextrestored", this.onRestored); this.renderer.dispose(); this.renderer.forceContextLoss(); this.renderer.domElement.remove(); }
-    [this.map, this.registration, this.tracking, this.paint, this.helpers].forEach(disposeGroup); this.paintObjects.clear(); this.scene?.clear(); this.container = null; this.renderer = null; this.scene = null; this.camera = null; this.controls = null; this.transformControls = null;
+    [this.map, this.registration, this.tracking, this.paint, this.helpers, this.markersGroup].forEach(disposeGroup); this.paintObjects.clear(); this.scene?.clear(); this.container = null; this.renderer = null; this.scene = null; this.camera = null; this.controls = null; this.transformControls = null;
   }
 
   private loop = () => { if (this.disposed || !this.renderer || !this.scene || !this.camera) return; const now = performance.now(); this.frameTime = this.frameTime * .9 + (now - this.lastFrame) * .1; this.lastFrame = now; this.controls?.update(); if (!this.contextLost) this.renderer.render(this.scene, this.camera); this.frame = requestAnimationFrame(this.loop); };
@@ -700,6 +814,7 @@ export class ViewerEngine implements Contract {
       }
     });
     this.camerasGroup.visible = this.filters.showFrames !== false;
+    this.markersGroup.visible = this.filters.showMarkers !== false;
     this.helpers.visible = this.filters.showFrames !== false;
     this.registration.visible = this.filters.showBoard !== false;
     this.tracking.visible = (this.mode === "live" || this.mode === "registration") && this.filters.showProbe !== false;

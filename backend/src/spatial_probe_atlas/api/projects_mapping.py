@@ -198,7 +198,12 @@ async def capture_frames(request: Request, project_id: str, capture_set_id: str,
     for index in range(body.count):
         frame = await container.camera.wait_for_frame(previous, timeout=2.0)
         previous = frame.sequence
-        depth = np.frombuffer(frame.depth_m, dtype=np.float32) if frame.depth_m is not None else np.full(frame.width * frame.height, np.nan, dtype=np.float32)
+        if frame.depth_m is None:
+            depth = np.full(frame.width * frame.height, np.nan, dtype=np.float32)
+        elif isinstance(frame.depth_m, bytes):
+            depth = np.frombuffer(frame.depth_m, dtype=np.float32)
+        else:
+            depth = np.asarray(frame.depth_m, dtype=np.float32)
         items.append(_persist_frame(container, project_id, capture_set_id, sequence=frame.sequence, timestamp_ns=frame.device_timestamp_ns, width=frame.width, height=frame.height, k=list(frame.intrinsic_matrix), rgb_bytes=frame.rgb, depth_values=depth, source=str(capture_set.get("source", "record3d"))))
         if body.interval_ms and index + 1 < body.count:
             await asyncio.sleep(body.interval_ms / 1000)
@@ -400,6 +405,39 @@ def _extract_colmap_cameras(container: Any, project_id: str, map_dir: Path, capt
         return []
 
 
+def _extract_colmap_markers(container: Any, project_id: str, map_dir: Path, capture_set_id: str | None = None, marker_size_m: float = 0.035) -> list[dict[str, Any]]:
+    colmap_path = None
+    for candidate in [map_dir / "sfm" / "models" / "0", map_dir / "sfm", map_dir]:
+        if (candidate / "images.bin").is_file() or (candidate / "images.txt").is_file():
+            colmap_path = candidate
+            break
+    if not colmap_path:
+        return []
+    raw_frames: list[dict[str, Any]] = []
+    if capture_set_id:
+        try:
+            raw_frames = [item for item in container.catalog.list_resources(project_id, "capture_frame", parent_id=capture_set_id, limit=2000) if item.get("state") == "accepted" or item.get("included", True)]
+        except Exception:
+            raw_frames = []
+    if not raw_frames:
+        try:
+            raw_frames = [item for item in container.catalog.list_resources(project_id, "capture_frame", limit=2000) if item.get("state") == "accepted" or item.get("included", True)]
+        except Exception:
+            raw_frames = []
+    if not raw_frames:
+        return []
+    try:
+        from spatial_probe_atlas.pipelines.mapping.align import extract_scene_markers
+        return extract_scene_markers(
+            artifact_root=container.artifacts.root,
+            sfm_dir=colmap_path,
+            frames_metadata=raw_frames,
+            nominal_marker_size_m=marker_size_m,
+        )
+    except Exception:
+        return []
+
+
 def _aruco_marker_ids(value: Any) -> list[int]:
     try:
         marker_ids = list(dict.fromkeys(int(marker_id) for marker_id in value))
@@ -414,16 +452,18 @@ def _virtual_board_definition(body: dict[str, Any]) -> dict[str, Any]:
     marker_ids = _aruco_marker_ids(body.get("marker_ids", [6, 7, 5]))
     try:
         marker_size_m = float(body.get("nominal_marker_size_m", 0.035))
-        separation_m = float(body.get("marker_separation_m", marker_size_m))
-        columns = int(body.get("columns", len(marker_ids)))
+        separation_m = float(body.get("marker_separation_m", 0.0))
+        columns = int(body.get("columns", len(marker_ids) if marker_ids else 1))
     except (TypeError, ValueError) as exc:
         raise AppError("ARUCO_BOARD_DIMENSIONS_INVALID", "Marker size, separation, and columns must be numeric values.", status_code=422) from exc
     if not np.isfinite(marker_size_m) or not 0.001 <= marker_size_m <= 1.0:
         raise AppError("ARUCO_MARKER_SIZE_INVALID", "The marker side length must be between 1 mm and 1 m.", status_code=422)
     if not np.isfinite(separation_m) or not 0.0 <= separation_m <= 1.0:
         raise AppError("ARUCO_MARKER_SEPARATION_INVALID", "The marker separation must be between 0 and 1 m.", status_code=422)
-    if not 1 <= columns <= len(marker_ids):
-        raise AppError("ARUCO_BOARD_COLUMNS_INVALID", "The board column count must be between one and the number of markers.", status_code=422)
+    if columns < 1:
+        columns = 1
+    if columns > len(marker_ids):
+        columns = len(marker_ids)
 
     rows = int(np.ceil(len(marker_ids) / columns))
     pitch = marker_size_m + separation_m
@@ -617,6 +657,10 @@ def map_manifest(request: Request, project_id: str, map_id: str, response: Respo
     response.headers["ETag"] = f'"{manifest["sha256"]}"'
     response.headers["Cache-Control"] = "no-cache"
     data = json.loads(path.read_text(encoding="utf-8"))
+    if scene_map.get("metric_binding"):
+        data["metric_binding"] = scene_map["metric_binding"]
+        data["published_coordinate_frame"] = "W"
+        data["published_units"] = "m"
     user_transform = scene_map.get("user_transform")
     if isinstance(user_transform, dict):
         data["userTransform"] = user_transform
@@ -624,6 +668,55 @@ def map_manifest(request: Request, project_id: str, map_id: str, response: Respo
     cams = _extract_colmap_cameras(request.app.state.container, project_id, path.parent, capture_set_id)
     if cams:
         data["registered_cameras"] = cams
+    nominal_size_m = 0.035
+    board_cal_id = scene_map.get("aruco_board_calibration_id")
+    board_markers: list[dict[str, Any]] = []
+    if board_cal_id:
+        try:
+            b_res = request.app.state.container.catalog.get_resource(project_id, "aruco_board_calibration", board_cal_id)
+            board_def = b_res.get("board", {})
+            nominal_size_m = float(board_def.get("marker_size_m", nominal_size_m))
+            data["board_definition"] = board_def
+            
+            layout = board_def.get("layout")
+            sim = scene_map.get("similarity_s_w_m0")
+            if isinstance(layout, dict) and isinstance(sim, dict) and sim.get("scale"):
+                scale = float(sim["scale"])
+                rot = np.array(sim["rotation"], dtype=np.float64).reshape(3, 3)
+                trans = np.array(sim["translation"], dtype=np.float64).reshape(3)
+                
+                for m_id_str, corners_w in layout.items():
+                    corners_w_arr = np.array(corners_w, dtype=np.float64).reshape(4, 3)
+                    corners_m0 = ((corners_w_arr - trans) @ rot) / scale
+                    center_m0 = np.mean(corners_m0, axis=0)
+                    v1 = corners_m0[1] - corners_m0[0]
+                    v2 = corners_m0[3] - corners_m0[0]
+                    n_raw = np.cross(v1, v2)
+                    n_val = np.linalg.norm(n_raw)
+                    normal = (n_raw / n_val) if n_val > 1e-6 else np.array([0.0, 0.0, 1.0])
+                    board_markers.append({
+                        "id": int(m_id_str),
+                        "marker_id": int(m_id_str),
+                        "corners": [[float(coord) for coord in pt] for pt in corners_m0],
+                        "center": [float(coord) for coord in center_m0],
+                        "normal": [float(coord) for coord in normal],
+                        "observation_count": int(sim.get("inlier_view_count", 1)),
+                    })
+        except Exception:
+            pass
+
+    triangulated_markers = _extract_colmap_markers(request.app.state.container, project_id, path.parent, capture_set_id, nominal_size_m)
+    
+    # Merge: Prioritize triangulated 3D markers from the SfM scene reconstruction
+    merged_markers: list[dict[str, Any]] = list(triangulated_markers)
+    triangulated_ids = {m["id"] for m in triangulated_markers}
+    for bm in board_markers:
+        if bm["id"] not in triangulated_ids:
+            merged_markers.append(bm)
+            triangulated_ids.add(bm["id"])
+
+    if merged_markers:
+        data["registered_markers"] = merged_markers
     return data
 
 

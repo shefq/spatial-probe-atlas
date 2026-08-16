@@ -101,21 +101,9 @@ def create_map_contract(request: Request, project_id: str, body: MapCreate) -> d
 
 @router.get("/projects/{project_id}/maps/{map_id}/point-cloud/manifest")
 def map_manifest_contract(request: Request, project_id: str, map_id: str) -> dict[str, Any]:
-    container = request.app.state.container
-    scene_map = container.catalog.get_resource(project_id, "scene_map", map_id)
-    info = scene_map.get("manifest")
-    if not info:
-        raise AppError("MAP_ARTIFACT_NOT_READY", "The map manifest has not been published.", status_code=409)
-    value = json.loads((container.artifacts.root / info["relative_uri"]).read_text(encoding="utf-8"))
-    low, high = value["bounds"]["min"], value["bounds"]["max"]
-    tiles = {}
-    for tile_id, tile in value["tiles"].items():
-        tiles[tile_id] = {"id": tile_id, "url": f"/api/v1/projects/{project_id}/maps/{map_id}/point-cloud/tiles/{tile_id}", "bounds": [*tile["bounds"]["min"], *tile["bounds"]["max"]], "point_count": tile["point_count"], "geometric_error": tile["geometric_error_m"], "children": tile["children"], "sha256": tile["sha256"]}
-    result = {"schema_version": "1.0.0", "map_id": map_id, "point_count": value["point_count"], "bounds": [*low, *high], "root_tiles": value["root_tiles"], "tiles": tiles, "position_encoding": "quantized_uint16_xyz", "coordinate_frame": "W", "units": "m", "native_format": value["format"]}
-    user_transform = scene_map.get("user_transform")
-    if isinstance(user_transform, dict):
-        result["userTransform"] = user_transform
-    return result
+    from . import projects_mapping
+    from fastapi import Response
+    return projects_mapping.map_manifest(request, project_id, map_id, Response())
 
 
 @router.get("/projects/{project_id}/probe-calibrations")

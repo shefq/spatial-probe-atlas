@@ -25,19 +25,9 @@ def clone_project_contract(request: Request, project_id: str, body: dict[str, An
 
 @router.get("/projects/{project_id}/maps/{map_id}/point-cloud/manifest")
 def native_map_manifest(request: Request, project_id: str, map_id: str) -> dict[str, Any]:
-    container = request.app.state.container
-    scene_map = container.catalog.get_resource(project_id, "scene_map", map_id)
-    info = scene_map.get("manifest")
-    if not info:
-        raise AppError("MAP_ARTIFACT_NOT_READY", "The map manifest has not been published.", status_code=409)
-    path = container.artifacts.root / info["relative_uri"]
-    if not path.is_file() or container.artifacts.sha256(path) != info["sha256"]:
-        raise AppError("MAP_ARTIFACT_CORRUPT", "The map manifest is missing or failed its checksum.", status_code=500)
-    manifest = json.loads(path.read_text(encoding="utf-8"))
-    user_transform = scene_map.get("user_transform")
-    if isinstance(user_transform, dict):
-        manifest["userTransform"] = user_transform
-    return manifest
+    from . import projects_mapping
+    from fastapi import Response
+    return projects_mapping.map_manifest(request, project_id, map_id, Response())
 
 
 @router.get("/system/logs/tail")

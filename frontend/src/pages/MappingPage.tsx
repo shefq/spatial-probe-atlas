@@ -183,7 +183,7 @@ export function MappingPage() {
       <div className="workflow-grid workflow-grid--mapping">
         <div className="mapping-main">
           <Card className="viewer-card" title="Spatial map inspection" eyebrow={selectedMap ? `${selectedMap.name} · ${selectedMap.state}` : "NO MAP SELECTED"} actions={selectedMap ? <><Segmented label="View mode" value={viewMode} options={[{ value: "points", label: "Points" }, { value: "mesh", label: "Mesh" }]} onChange={(v) => setViewMode(v as "points" | "mesh")} /><select className="select select--compact" value={selectedMapId} onChange={(event) => setSelectedMapId(event.target.value)}>{maps.map((map) => <option key={map.id} value={map.id}>{map.name}{map.active ? " · active" : ""}</option>)}</select>{!selectedMap.active && selectedMap.state.startsWith("ready") ? <Button size="sm" busy={busy} onClick={() => void activateMap(selectedMap)}>Activate</Button> : null}</> : null}>
-            {selectedMap ? <SpatialViewer ref={viewerRef} mode="mapping" projectId={projectId} mapId={selectedMap.id} onMetrics={setViewerMetrics} filters={{ showMap: true, showFrames: true }} /> : <div className="viewer-empty"><EmptyState icon="⌖" title="Your point cloud will appear here">Capture at least 7 accepted frames, then build the CPU or CUDA reconstruction.</EmptyState></div>}
+            {selectedMap ? <SpatialViewer ref={viewerRef} mode="mapping" projectId={projectId} mapId={selectedMap.id} onMetrics={setViewerMetrics} filters={{ showMap: true, showFrames: true, showBoard: true, showMarkers: true }} /> : <div className="viewer-empty"><EmptyState icon="⌖" title="Your point cloud will appear here">Capture at least 7 accepted frames, then build the CPU or CUDA reconstruction.</EmptyState></div>}
             <div className="viewer-metrics"><span>Map {formatCount(selectedMap?.point_count)} pts</span><span>Visible {formatCount(viewerMetrics?.visiblePoints)} pts</span><span>Tiles {viewerMetrics?.loadedTiles ?? 0}</span><span>{viewerMetrics?.frameTimeMs.toFixed(1) ?? "—"} ms</span></div>
           </Card>
           <Card title="Frame browser" eyebrow="INCREMENTAL QUALITY" actions={<span className="muted">Click frame to toggle · Click × to delete</span>}>
@@ -222,73 +222,68 @@ export function MappingPage() {
 
 function SfmBoardAlignment({ projectId, mapId, mapState, boardCalibrationId, busy, setBusy, refresh, onAligned }: { projectId: string; mapId: string; mapState: string; boardCalibrationId?: string; busy: boolean; setBusy: (busy: boolean) => void; refresh: () => Promise<void>; onAligned: () => void }) {
   const pushToast = useUiStore((state) => state.pushToast);
-  const [markerIds, setMarkerIds] = useState("6, 7, 5");
+  const [referenceMarkerId, setReferenceMarkerId] = useState("7");
   const [markerSizeMm, setMarkerSizeMm] = useState("35");
-  const [markerSeparationMm, setMarkerSeparationMm] = useState("35");
-  const [columns, setColumns] = useState("3");
   const [maxRmsPx, setMaxRmsPx] = useState("2.0");
   const canRun = mapState.startsWith("ready") || mapState === "active";
-  const boardInputs = () => {
-    const ids = Array.from(new Set(markerIds.split(",").map((value) => Number.parseInt(value.trim(), 10)).filter(Number.isFinite)));
+
+  const alignWithReference = async () => {
+    const ids = Array.from(new Set(referenceMarkerId.split(",").map((v) => Number.parseInt(v.trim(), 10)).filter(Number.isFinite)));
     const markerSizeM = Number(markerSizeMm) / 1000;
-    const markerSeparationM = Number(markerSeparationMm) / 1000;
-    const boardColumns = Number.parseInt(columns, 10);
-    return { ids, markerSizeM, markerSeparationM, boardColumns };
-  };
-  const createBoard = async () => {
-    const { ids, markerSizeM, markerSeparationM, boardColumns } = boardInputs();
-    if (!ids.length || !Number.isFinite(markerSizeM) || markerSizeM <= 0 || !Number.isFinite(markerSeparationM) || markerSeparationM < 0 || !Number.isInteger(boardColumns) || boardColumns < 1 || boardColumns > ids.length) {
-      pushToast({ kind: "error", title: "Board settings are invalid", message: "Enter marker IDs, a positive side length, a non-negative gap, and a valid column count." });
-      return;
-    }
-    setBusy(true);
-    try {
-      const result = await api.maps.createArucoBoard(projectId, mapId, ids, markerSizeM, markerSeparationM, boardColumns);
-      await refresh();
-      pushToast({ kind: "success", title: "Virtual ArUco board calibration created", message: `${result.board_calibration.board.marker_ids.length} markers stored in reusable metric calibration data.` });
-    } catch (error) {
-      pushToast({ kind: "error", title: "Board calibration creation failed", message: errorMessage(error) });
-    } finally {
-      setBusy(false);
-    }
-  };
-  const align = async () => {
-    const { ids } = boardInputs();
     const threshold = Number(maxRmsPx);
-    if (!boardCalibrationId) {
-      pushToast({ kind: "warning", title: "Create the virtual board first", message: "The map is aligned only to a stored ArUco board calibration." });
+    if (!ids.length || !Number.isFinite(markerSizeM) || markerSizeM <= 0) {
+      pushToast({ kind: "error", title: "Invalid settings", message: "Enter a valid reference marker ID (e.g. 7) and a positive marker size in mm." });
       return;
     }
-    if (!ids.length || !Number.isFinite(threshold) || threshold <= 0) {
-      pushToast({ kind: "error", title: "Alignment settings are invalid", message: "Enter one or more marker IDs and a positive RMS threshold." });
+    if (!Number.isFinite(threshold) || threshold <= 0) {
+      pushToast({ kind: "error", title: "Invalid settings", message: "Enter a positive maximum RMS reprojection error." });
       return;
     }
     setBusy(true);
     try {
-      const map = await api.maps.alignAruco(projectId, mapId, boardCalibrationId, ids, threshold);
+      // 1. Create or update reference marker calibration (single marker or reference anchor)
+      const calib = await api.maps.createArucoBoard(projectId, mapId, ids, markerSizeM, 0, ids.length);
+      const calibId = calib.board_calibration.board_calibration_id || boardCalibrationId;
+      if (!calibId) throw new Error("Failed to create reference marker calibration");
+
+      // 2. Align map using the reference marker
+      const map = await api.maps.alignAruco(projectId, mapId, calibId, ids, threshold);
       const metrics = map.similarity_s_w_m0;
       onAligned();
       await refresh();
       pushToast({
         kind: "success",
-        title: "SfM map aligned to virtual board",
-        message: metrics ? `${metrics.inlier_view_count}/${metrics.view_count} views; RMS ${metrics.rms_reprojection_error_px.toFixed(2)} px.` : "Robust corner alignment passed.",
+        title: "SfM map aligned to reference marker",
+        message: metrics ? `${metrics.inlier_view_count}/${metrics.view_count} views aligned; RMS ${metrics.rms_reprojection_error_px.toFixed(2)} px. All scene markers triangulated.` : "Reference alignment completed.",
       });
     } catch (error) {
-      pushToast({ kind: "error", title: "Board alignment failed", message: errorMessage(error) });
+      pushToast({ kind: "error", title: "Alignment failed", message: errorMessage(error) });
     } finally {
       setBusy(false);
     }
   };
+
   return (
     <div className="button-row" style={{ marginTop: 12, display: "flex", flexDirection: "column", gap: 8 }}>
-      <Field label="Virtual ArUco board" hint="Create and persist the exact metric board definition before alignment. IDs are laid out row-major, left to right, top to bottom.">
-        <div className="button-row"><TextInput aria-label="ArUco marker IDs" value={markerIds} onChange={(event) => setMarkerIds(event.target.value)} /><TextInput aria-label="ArUco marker side length in millimetres" value={markerSizeMm} onChange={(event) => setMarkerSizeMm(event.target.value)} /></div>
-        <div className="button-row"><TextInput aria-label="ArUco marker separation in millimetres" value={markerSeparationMm} onChange={(event) => setMarkerSeparationMm(event.target.value)} /><TextInput aria-label="ArUco board column count" value={columns} onChange={(event) => setColumns(event.target.value)} /></div>
+      <Field label="Reference ArUco marker alignment" hint="Establishes origin and metric scale from a reference marker of known size. All scene markers are automatically triangulated in 3D at their exact physical locations.">
+        <div className="button-row">
+          <TextInput aria-label="Reference marker ID" placeholder="Reference Marker ID (e.g. 7)" value={referenceMarkerId} onChange={(e) => setReferenceMarkerId(e.target.value)} />
+          <TextInput aria-label="Marker side length in millimetres" placeholder="Marker side length (mm)" value={markerSizeMm} onChange={(e) => setMarkerSizeMm(e.target.value)} />
+        </div>
       </Field>
-      <div className="button-row"><Button size="sm" variant="default" busy={busy} disabled={!canRun} onClick={() => void createBoard()}>{boardCalibrationId ? "Create replacement board calibration" : "Create virtual board calibration"}</Button>{boardCalibrationId ? <Button size="sm" onClick={() => api.maps.downloadArucoBoard(projectId, boardCalibrationId)}>Download board calibration JSON</Button> : null}</div>
-      <Field label="Accept RMS reprojection error (px)" hint="Alignment is saved only when robust all-corner RMS is at or below this limit."><TextInput aria-label="Maximum RMS reprojection error" value={maxRmsPx} onChange={(event) => setMaxRmsPx(event.target.value)} /></Field>
-      <Button size="sm" variant="primary" busy={busy} disabled={!canRun || !boardCalibrationId} onClick={() => void align()}>Align SfM map to virtual ArUco board</Button>
+      <Field label="Accept RMS reprojection error (px)" hint="Alignment is accepted when robust corner reprojection RMS is at or below this threshold.">
+        <TextInput aria-label="Maximum RMS reprojection error" value={maxRmsPx} onChange={(e) => setMaxRmsPx(e.target.value)} />
+      </Field>
+      <div className="button-row">
+        <Button size="sm" variant="primary" busy={busy} disabled={!canRun} onClick={() => void alignWithReference()}>
+          Align SfM map to ArUco reference marker
+        </Button>
+        {boardCalibrationId ? (
+          <Button size="sm" onClick={() => api.maps.downloadArucoBoard(projectId, boardCalibrationId)}>
+            Download calibration JSON
+          </Button>
+        ) : null}
+      </div>
     </div>
   );
 }

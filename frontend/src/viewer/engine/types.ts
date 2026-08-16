@@ -1,4 +1,5 @@
 import type { PaintedRecord, PointCloudManifest, TrackingViewFrame } from "../../api/types";
+import type { MarkerItem } from "../point-cloud/v1";
 
 export type ViewerMode = "mapping" | "registration" | "live" | "review";
 
@@ -37,6 +38,7 @@ export interface ViewerFilters {
   showFrames?: boolean;
   showProbe?: boolean;
   showBoard?: boolean;
+  showMarkers?: boolean;
   showPoints?: boolean;
   showPaths?: boolean;
   includeDeleted?: boolean;
@@ -92,6 +94,7 @@ export interface ViewerEngine {
   getMapTransform(): MapTransformData;
   resetMapTransform(): void;
   setCameras(cameras: CameraItem[]): void;
+  setMarkers(markers: MarkerItem[]): void;
   setCamSize(size: number): void;
   setPointSize(size: number): void;
   loadMesh(projectId: string, mapId: string): Promise<void>;

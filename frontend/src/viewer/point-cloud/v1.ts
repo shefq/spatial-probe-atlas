@@ -8,6 +8,15 @@ export interface V1Tile {
   children: string[];
   sha256?: string;
 }
+export interface MarkerItem {
+  id: number;
+  marker_id?: number;
+  corners: [number, number, number][];
+  center: [number, number, number];
+  normal?: [number, number, number];
+  observation_count?: number;
+}
+
 export interface V1Manifest {
   format: "spatial-probe-atlas-octree";
   version: 1;
@@ -20,6 +29,8 @@ export interface V1Manifest {
   tiles: Record<string, V1Tile>;
   registered_cameras?: any[];
   registeredCameras?: any[];
+  registered_markers?: MarkerItem[];
+  registeredMarkers?: MarkerItem[];
 }
 
 type RawManifest = {

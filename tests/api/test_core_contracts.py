@@ -212,3 +212,9 @@ def test_probe_calibration_validation_rejects_board_calibration_without_crashing
     assert response.status_code == 200
     assert response.json()["valid"] is False
     assert "not a five-marker probe calibration" in response.json()["errors"][0]["message"]
+
+
+def test_extract_scene_markers_handles_missing_reconstruction_gracefully(tmp_path):
+    from spatial_probe_atlas.pipelines.mapping.align import extract_scene_markers
+    markers = extract_scene_markers(tmp_path, tmp_path / "sfm", [])
+    assert markers == []
