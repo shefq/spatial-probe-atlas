@@ -52,7 +52,7 @@ export const SpatialViewer = forwardRef<SpatialViewerHandle, SpatialViewerProps>
   const [generation, setGeneration] = useState(0);
   const [transformMode, setTransformModeState] = useState<TransformMode>("none");
   const [pointSize, setPointSizeState] = useState<number>(0.012);
-  const [camSize, setCamSizeState] = useState<number>(0.08);
+  const [camSize, setCamSizeState] = useState<number>(0.19);
   const [framePopup, setFramePopup] = useState<{ cam: CameraItem; imgUrl: string } | null>(null);
 
   const handleCameraDoubleClick = useCallback((cam: CameraItem) => {

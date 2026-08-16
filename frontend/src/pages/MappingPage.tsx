@@ -212,10 +212,52 @@ export function MappingPage() {
           </Card>
           {activeJob ? <JobCard job={activeJob} onRefresh={() => void refresh()} /> : null}
           {selectedMap ? <Card title="Map result" eyebrow="VALIDATION"><div className="metric-grid"><Metric label="Points" value={formatCount(selectedMap.point_count)} /><Metric label="Registered" value={formatCount(selectedMap.registered_image_count)} /><Metric label="Reprojection" value={selectedMap.reprojection_error_px == null ? "—" : `${selectedMap.reprojection_error_px.toFixed(2)} px`} /><Metric label="Size" value={formatBytes(selectedMap.size_bytes)} /></div><StatusBadge state={selectedMap.active ? "active" : selectedMap.state} />
-            {selectedMap.effective_compute_profile?.includes("cuda") ? <OpenMvsRunner projectId={projectId} mapId={selectedMap.id} mapState={selectedMap.state} busy={busy} setBusy={setBusy} refresh={refresh} /> : null}
+            {selectedMap.effective_compute_profile?.includes("cuda") ? <><SfmBoardAlignment projectId={projectId} mapId={selectedMap.id} mapState={selectedMap.state} busy={busy} setBusy={setBusy} refresh={refresh} onAligned={() => viewerRef.current?.reloadMap?.()} /><OpenMvsRunner projectId={projectId} mapId={selectedMap.id} mapState={selectedMap.state} busy={busy} setBusy={setBusy} refresh={refresh} /></> : null}
           </Card> : null}
         </aside>
       </div>
+    </div>
+  );
+}
+
+function SfmBoardAlignment({ projectId, mapId, mapState, busy, setBusy, refresh, onAligned }: { projectId: string; mapId: string; mapState: string; busy: boolean; setBusy: (busy: boolean) => void; refresh: () => Promise<void>; onAligned: () => void }) {
+  const pushToast = useUiStore((state) => state.pushToast);
+  const [markerIds, setMarkerIds] = useState("6, 7, 5");
+  const [markerSizeMm, setMarkerSizeMm] = useState("35");
+  const [maxRmsPx, setMaxRmsPx] = useState("2.0");
+  const canRun = mapState.startsWith("ready") || mapState === "active";
+  const align = async () => {
+    const ids = Array.from(new Set(markerIds.split(",").map((value) => Number.parseInt(value.trim(), 10)).filter(Number.isFinite)));
+    const markerSizeM = Number(markerSizeMm) / 1000;
+    const threshold = Number(maxRmsPx);
+    if (!ids.length || !Number.isFinite(markerSizeM) || markerSizeM <= 0 || !Number.isFinite(threshold) || threshold <= 0) {
+      pushToast({ kind: "error", title: "Alignment settings are invalid", message: "Enter one or more marker IDs, a positive side length, and a positive RMS threshold." });
+      return;
+    }
+    setBusy(true);
+    try {
+      const map = await api.maps.alignAruco(projectId, mapId, ids, markerSizeM, threshold);
+      const metrics = map.similarity_s_w_m0;
+      onAligned();
+      await refresh();
+      pushToast({
+        kind: "success",
+        title: "SfM map aligned to virtual board",
+        message: metrics ? `${metrics.inlier_view_count}/${metrics.view_count} views; RMS ${metrics.rms_reprojection_error_px.toFixed(2)} px.` : "Robust corner alignment passed.",
+      });
+    } catch (error) {
+      pushToast({ kind: "error", title: "Board alignment failed", message: errorMessage(error) });
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div className="button-row" style={{ marginTop: 12, display: "flex", flexDirection: "column", gap: 8 }}>
+      <Field label="Virtual ArUco board" hint="Uses the active board layout when available; otherwise creates a centred linear layout from these IDs and side length.">
+        <div className="button-row"><TextInput aria-label="ArUco marker IDs" value={markerIds} onChange={(event) => setMarkerIds(event.target.value)} /><TextInput aria-label="ArUco marker side length in millimetres" value={markerSizeMm} onChange={(event) => setMarkerSizeMm(event.target.value)} /></div>
+      </Field>
+      <Field label="Accept RMS reprojection error (px)" hint="Alignment is saved only when robust all-corner RMS is at or below this limit."><TextInput aria-label="Maximum RMS reprojection error" value={maxRmsPx} onChange={(event) => setMaxRmsPx(event.target.value)} /></Field>
+      <Button size="sm" variant="default" busy={busy} disabled={!canRun} onClick={() => void align()}>Align SfM map to virtual ArUco board</Button>
     </div>
   );
 }

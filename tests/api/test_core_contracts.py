@@ -144,3 +144,20 @@ def test_map_manifest_includes_saved_user_transform(client):
     response = client.get(f"/api/v1/projects/{project_id}/maps/{scene_map['map_id']}/point-cloud/manifest")
     assert response.status_code == 200
     assert response.json()["userTransform"] == transform
+
+
+def test_aruco_sfm_alignment_rejects_non_sfm_maps(client):
+    container = client.app.state.container
+    project = container.catalog.create_project("No SfM alignment")
+    scene_map = container.catalog.create_resource(
+        project["project_id"], "scene_map", state="ready_metric", name="Depth map",
+        payload={"effective_compute_profile": "cpu_depth_assisted_replay"},
+    )
+
+    response = client.post(
+        f"/api/v1/projects/{project['project_id']}/maps/{scene_map['map_id']}/align-aruco",
+        json={"marker_ids": [6, 7, 5]},
+    )
+
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "SFM_ALIGNMENT_UNAVAILABLE"

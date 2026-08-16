@@ -144,7 +144,7 @@ export class ViewerEngine implements Contract {
     if (container.clientWidth < 1 || container.clientHeight < 1) throw new Error("Viewer container must have non-zero dimensions.");
     this.container = container; this.mode = options.mode; this.budget = options.pointBudget ?? this.budget;
     this.scene = new Scene(); this.scene.background = new Color(options.background ?? 0x080c11);
-    this.camera = new PerspectiveCamera(48, container.clientWidth / container.clientHeight, .002, 2500); this.camera.position.set(.45, .35, .55);
+    this.camera = new PerspectiveCamera(48, container.clientWidth / container.clientHeight, .002, 2500); this.camera.position.set(.45, .35, .55); this.camera.up.set(0, 0, 1);
     this.renderer = new WebGLRenderer({ antialias: true, powerPreference: "high-performance" }); this.renderer.outputColorSpace = SRGBColorSpace;
     this.dpr = Math.min(window.devicePixelRatio || 1, 2); this.renderer.setPixelRatio(this.dpr); this.renderer.setSize(container.clientWidth, container.clientHeight, false); container.appendChild(this.renderer.domElement);
     this.controls = new OrbitControls(this.camera, this.renderer.domElement); this.controls.enableDamping = true; this.controls.dampingFactor = .08;
@@ -162,7 +162,7 @@ export class ViewerEngine implements Contract {
     });
     this.transformPivot.add(this.map, this.camerasGroup, this.objMesh);
     this.scene.add(this.transformPivot, this.registration, this.tracking, this.paint, this.helpers, this.transformControls.getHelper(), new AmbientLight(0xa7b9cd, 1.3), new DirectionalLight(0xffffff, 1.7));
-    const grid = new GridHelper(10, 50, 0x29415a, 0x162332); grid.material.opacity = .42; grid.material.transparent = true;
+    const grid = new GridHelper(10, 50, 0x29415a, 0x162332); grid.material.opacity = .42; grid.material.transparent = true; grid.rotation.x = Math.PI / 2;
     const worldAxes = createLabeledAxes(0.15);
     this.helpers.add(grid, worldAxes);
     this.renderer.domElement.addEventListener("webglcontextlost", this.onLost); this.renderer.domElement.addEventListener("webglcontextrestored", this.onRestored);
@@ -311,7 +311,7 @@ export class ViewerEngine implements Contract {
     }
   }
 
-  private camScale = 1.0;
+  private camScale = 0.19 / 0.08;
 
   setCameras(cameras: (CameraItem & { lookAt?: [number, number, number] })[]): void {
     disposeGroup(this.camerasGroup);

@@ -403,6 +403,14 @@ def align_map_to_aruco_endpoint(request: Request, project_id: str, map_id: str, 
     from spatial_probe_atlas.pipelines.mapping.align import align_map_to_aruco
     container = request.app.state.container
     scene_map = container.catalog.get_resource(project_id, "scene_map", map_id)
+    sfm = scene_map.get("sfm")
+    if not isinstance(sfm, dict) or not sfm.get("relative_uri"):
+        raise AppError(
+            "SFM_ALIGNMENT_UNAVAILABLE",
+            "ArUco alignment requires a completed CUDA SfM map with registered camera poses.",
+            status_code=409,
+            suggested_action="Build this capture using CUDA · ALIKED + LightGlue, then retry alignment.",
+        )
     
     capture_id = body.get("probe_capture_id")
     if capture_id:
@@ -415,7 +423,7 @@ def align_map_to_aruco_endpoint(request: Request, project_id: str, map_id: str, 
     if not accepted:
         raise AppError("CAPTURE_EMPTY", "No accepted frames in the capture.", status_code=422)
         
-    sfm_dir = container.catalog.artifacts.root / scene_map["sfm"]["relative_uri"]
+    sfm_dir = container.catalog.artifacts.root / sfm["relative_uri"]
     
     calibrations = []
     if body.get("probe_capture_id"):
@@ -427,10 +435,17 @@ def align_map_to_aruco_endpoint(request: Request, project_id: str, map_id: str, 
             if calib:
                 calibrations.append(calib)
                 
-    marker_ids = body.get("marker_ids", [6, 7, 5])
+    try:
+        marker_ids = list(dict.fromkeys(int(value) for value in body.get("marker_ids", [6, 7, 5])))
+    except (TypeError, ValueError) as exc:
+        raise AppError("ARUCO_MARKER_IDS_INVALID", "Marker IDs must be a non-empty list of integer IDs.", status_code=422) from exc
+    if not marker_ids:
+        raise AppError("ARUCO_MARKER_IDS_INVALID", "At least one ArUco marker ID is required.", status_code=422)
     if not calibrations:
         # Fallback to default 3-marker layout with 4 corners per marker
         marker_size = float(body.get("nominal_marker_size_m", 0.035))
+        if not np.isfinite(marker_size) or not 0.001 <= marker_size <= 1.0:
+            raise AppError("ARUCO_MARKER_SIZE_INVALID", "The nominal marker side length must be between 1 mm and 1 m.", status_code=422)
         spacing = 0.07
         half = marker_size / 2.0
         board_dict = {}
@@ -445,7 +460,13 @@ def align_map_to_aruco_endpoint(request: Request, project_id: str, map_id: str, 
     else:
         board_dict = calibrations[0]["board"]["layout"]
         
-    board_layout = {int(k): np.asarray(v, dtype=np.float32) for k, v in board_dict.items()}
+    try:
+        board_layout = {int(k): np.asarray(v, dtype=np.float32).reshape(4, 3) for k, v in board_dict.items()}
+    except (TypeError, ValueError) as exc:
+        raise AppError("ARUCO_BOARD_LAYOUT_INVALID", "The active virtual board has invalid marker-corner coordinates.", status_code=422) from exc
+    missing_marker_ids = [marker_id for marker_id in marker_ids if marker_id not in board_layout]
+    if missing_marker_ids:
+        raise AppError("ARUCO_BOARD_LAYOUT_INCOMPLETE", "The selected marker IDs are absent from the active virtual-board layout.", status_code=422, details={"missing_marker_ids": missing_marker_ids})
     
     solution = align_map_to_aruco(
         artifact_root=container.catalog.artifacts.root,
@@ -454,6 +475,26 @@ def align_map_to_aruco_endpoint(request: Request, project_id: str, map_id: str, 
         marker_ids=marker_ids,
         board_layout=board_layout
     )
+    try:
+        max_rms_reprojection_error_px = float(body.get("max_rms_reprojection_error_px", 2.0))
+    except (TypeError, ValueError) as exc:
+        raise AppError("ALIGNMENT_THRESHOLD_INVALID", "The maximum RMS reprojection error must be a positive number of pixels.", status_code=422) from exc
+    if not np.isfinite(max_rms_reprojection_error_px) or not 0.1 <= max_rms_reprojection_error_px <= 20.0:
+        raise AppError("ALIGNMENT_THRESHOLD_INVALID", "The maximum RMS reprojection error must be between 0.1 and 20 px.", status_code=422)
+    if solution["rms_reprojection_error_px"] > max_rms_reprojection_error_px:
+        raise AppError(
+            "ALIGNMENT_REPROJECTION_HIGH",
+            "Robust board alignment was rejected because its RMS corner reprojection error exceeded the acceptance threshold.",
+            status_code=422,
+            suggested_action="Recapture sharper, well-covered board views or relax the threshold only after independent validation.",
+            details={
+                "rms_reprojection_error_px": solution["rms_reprojection_error_px"],
+                "max_reprojection_error_px": solution["max_reprojection_error_px"],
+                "threshold_px": max_rms_reprojection_error_px,
+                "inlier_views": solution["inlier_view_count"],
+                "corner_inliers": solution["corner_inlier_count"],
+            },
+        )
     
     # Build board calibration payload definition
     board_def = {

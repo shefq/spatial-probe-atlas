@@ -125,6 +125,17 @@ export interface MapTransform {
   scale: number;
 }
 
+export interface ArucoAlignmentMetrics {
+  method: string;
+  rms_reprojection_error_px: number;
+  max_reprojection_error_px: number;
+  p95_reprojection_error_px: number;
+  view_count: number;
+  inlier_view_count: number;
+  corner_observation_count: number;
+  corner_inlier_count: number;
+}
+
 export interface SceneMap {
   id: UUID;
   project_id: UUID;
@@ -141,6 +152,7 @@ export interface SceneMap {
   effective_compute_profile?: string;
   manifest_url?: string;
   user_transform?: MapTransform;
+  similarity_s_w_m0?: ArucoAlignmentMetrics & { scale: number; rotation: number[]; translation: number[] };
   job_id?: UUID;
   created_at: IsoTimestamp;
 }
