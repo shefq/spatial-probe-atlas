@@ -65,7 +65,7 @@ export function MappingPage() {
 
   const activeJob = useMemo(() => {
     const mapJobId = maps.find((map) => map.id === selectedMapId)?.job_id;
-    if (mapJobId && jobStore[mapJobId]) return jobStore[mapJobId];
+    if (mapJobId && jobStore[mapJobId] && !["completed", "cancelled", "failed"].includes(jobStore[mapJobId].state)) return jobStore[mapJobId];
     return Object.values(jobStore).find((job) => job.owner_project_id === projectId && ["mapping", "mesh"].includes(job.type) && !["completed", "cancelled", "failed"].includes(job.state));
   }, [jobStore, maps, projectId, selectedMapId]);
   useEffect(() => {
@@ -299,12 +299,165 @@ function SfmBoardAlignment({ projectId, mapId, mapState, boardCalibrationId, bus
 
 function OpenMvsRunner({ projectId, mapId, mapState, busy, setBusy, refresh }: { projectId: string, mapId: string, mapState: string, busy: boolean, setBusy: (busy: boolean) => void, refresh: () => Promise<void> }) {
   const pushToast = useUiStore((state) => state.pushToast);
+  const upsertJob = useJobStore((state) => state.upsert);
   const [binPath, setBinPath] = useState(localStorage.getItem("spa_openmvs_bin") ?? "");
+  const [meshJob, setMeshJob] = useState<JobSnapshot | null>(null);
   const canRun = mapState.startsWith("ready") || mapState === "active";
+
+  useEffect(() => {
+    if (!meshJob?.id || ["completed", "cancelled", "failed"].includes(meshJob.state)) return;
+    const timer = window.setInterval(async () => {
+      try {
+        const updated = await api.jobs.get(meshJob.id);
+        setMeshJob(updated);
+        upsertJob(updated);
+        if (updated.state === "completed") {
+          pushToast({ kind: "success", title: "OpenMVS mesh generated successfully!" });
+          await refresh();
+        } else if (updated.state === "failed") {
+          pushToast({ kind: "error", title: "OpenMVS mesh generation failed", message: updated.error?.message });
+        }
+      } catch {}
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [meshJob?.id, meshJob?.state, refresh, upsertJob]);
+
+  const startMeshGeneration = async () => {
+    setBusy(true);
+    try {
+      const res = await api.maps.generateMesh(projectId, mapId, binPath);
+      const initialJob: JobSnapshot = {
+        id: res.job_id,
+        owner_project_id: projectId,
+        owner_id: mapId,
+        type: "mesh",
+        state: "queued",
+        stage: "interface_colmap",
+        stage_index: 1,
+        stage_count: 4,
+        progress: 0.05,
+        message: "Queueing OpenMVS pipeline…",
+        created_at: new Date().toISOString(),
+      };
+      setMeshJob(initialJob);
+      upsertJob(initialJob);
+      pushToast({ kind: "success", title: "Mesh generation queued" });
+      await refresh();
+    } catch (error) {
+      pushToast({ kind: "error", title: "Action failed", message: errorMessage(error) });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const cancelJob = async () => {
+    if (!meshJob?.id) return;
+    setBusy(true);
+    try {
+      const cancelled = await api.jobs.cancel(meshJob.id);
+      setMeshJob(cancelled);
+      upsertJob(cancelled);
+      pushToast({ kind: "warning", title: "Mesh generation cancelled" });
+    } catch (err) {
+      pushToast({ kind: "error", title: "Cancel failed", message: errorMessage(err) });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const isRunning = meshJob && ["queued", "admitted", "processing"].includes(meshJob.state);
+
+  const stages = [
+    { key: "interface_colmap", label: "1. Convert", index: 1 },
+    { key: "densify_point_cloud", label: "2. Densify", index: 2 },
+    { key: "reconstruct_mesh", label: "3. Mesh", index: 3 },
+    { key: "texture_mesh", label: "4. Texture", index: 4 },
+  ];
+
   return (
-    <div className="button-row" style={{ marginTop: 12, display: "flex", flexDirection: "column", gap: 8 }}>
-      <Field label="OpenMVS Bin Path (Optional)" hint="e.g. C:\OpenMVS\bin"><TextInput value={binPath} onChange={(e) => { setBinPath(e.target.value); localStorage.setItem("spa_openmvs_bin", e.target.value); }} /></Field>
-      <Button size="sm" variant="primary" busy={busy} disabled={!canRun} onClick={async () => { setBusy(true); try { await api.maps.generateMesh(projectId, mapId, binPath); pushToast({ kind: "success", title: "Mesh generation queued" }); await refresh(); } catch (error) { pushToast({ kind: "error", title: "Action failed", message: errorMessage(error) }); } finally { setBusy(false); } }}>Generate textured mesh (OpenMVS)</Button>
+    <div className="button-row" style={{ marginTop: 12, display: "flex", flexDirection: "column", gap: 10 }}>
+      <Field label="OpenMVS Bin Path (Optional)" hint="e.g. C:\OpenMVS\bin (or leave empty if in PATH)">
+        <TextInput
+          value={binPath}
+          placeholder="C:\OpenMVS\bin (optional)"
+          disabled={Boolean(isRunning)}
+          onChange={(e) => {
+            setBinPath(e.target.value);
+            localStorage.setItem("spa_openmvs_bin", e.target.value);
+          }}
+        />
+      </Field>
+      <Button
+        size="sm"
+        variant="primary"
+        busy={busy || Boolean(isRunning)}
+        disabled={!canRun || Boolean(isRunning)}
+        onClick={() => void startMeshGeneration()}
+      >
+        {isRunning ? "Generating textured mesh…" : "Generate textured mesh (OpenMVS)"}
+      </Button>
+
+      {meshJob ? (
+        <div style={{ padding: "0.75rem", background: "rgba(10, 18, 26, 0.9)", border: "1px solid var(--line-strong)", borderRadius: "8px", display: "flex", flexDirection: "column", gap: "8px", marginTop: "2px" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            <strong style={{ fontSize: "0.8rem", color: "var(--cyan)" }}>OpenMVS Status</strong>
+            <StatusBadge state={meshJob.state} />
+          </div>
+
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: "4px", margin: "2px 0" }}>
+            {stages.map((st) => {
+              const isCurrent = meshJob.stage === st.key && isRunning;
+              const isPast = (meshJob.stage_index ?? 0) > st.index || meshJob.state === "completed";
+              return (
+                <div
+                  key={st.key}
+                  style={{
+                    padding: "4px 2px",
+                    textAlign: "center",
+                    fontSize: "0.62rem",
+                    borderRadius: "4px",
+                    fontWeight: 600,
+                    background: isCurrent ? "rgba(46, 146, 174, 0.35)" : isPast ? "rgba(39, 134, 106, 0.25)" : "rgba(255, 255, 255, 0.04)",
+                    color: isCurrent ? "var(--cyan)" : isPast ? "var(--green)" : "var(--muted)",
+                    border: `1px solid ${isCurrent ? "var(--cyan)" : isPast ? "#27866a" : "rgba(255, 255, 255, 0.08)"}`,
+                  }}
+                >
+                  {isPast && meshJob.state !== "processing" ? "✓ " : ""}{st.label}
+                </div>
+              );
+            })}
+          </div>
+
+          <ProgressBar value={meshJob.state === "completed" ? 1 : Math.max(0.05, meshJob.progress ?? 0)} />
+
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: "0.72rem", color: "var(--text-soft)" }}>
+            <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: "80%" }}>
+              {meshJob.message || (meshJob.stage ? `Processing ${meshJob.stage.replaceAll("_", " ")}…` : "Working…")}
+            </span>
+            <strong style={{ fontVariantNumeric: "tabular-nums" }}>{Math.round((meshJob.progress ?? 0) * 100)}%</strong>
+          </div>
+
+          {meshJob.state === "failed" && (
+            <InlineAlert tone="danger" title="OpenMVS Failed">
+              {meshJob.error?.message || "Mesh generation encountered an error."}
+            </InlineAlert>
+          )}
+
+          {meshJob.state === "completed" && (
+            <InlineAlert tone="success" title="Mesh Ready">
+              Full-color textured mesh ready. Switch View mode to <strong>Mesh</strong> to inspect!
+            </InlineAlert>
+          )}
+
+          {isRunning && (
+            <div style={{ display: "flex", justifyContent: "flex-end", marginTop: "2px" }}>
+              <Button size="sm" variant="danger" busy={busy} onClick={() => void cancelJob()}>
+                Cancel job
+              </Button>
+            </div>
+          )}
+        </div>
+      ) : null}
     </div>
   );
 }
