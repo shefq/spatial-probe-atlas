@@ -182,16 +182,18 @@ export function LivePaintingPage() {
   };
   const sendPoint = (reason?: string) => {
     if (!streamRef.current) return;
+    const currentTip = tracking?.tip_w_m;
     const commandId = streamRef.current.send("paint.point", {
       reason,
       allow_low_quality: true,
       frame_id: tracking?.frame_id,
+      position_w_m: currentTip,
       save_image: true,
       window_s: windowSec,
       use_window_average: useWindowAvg,
     });
-    if (tracking?.tip_w_m && tracking.probe_state === "tracked" && tracking.camera_state === "tracked") {
-      viewerRef.current?.setPaintData({ provisional: [{ id: commandId, position: tracking.tip_w_m, quality: tracking.quality }] });
+    if (currentTip && tracking?.probe_state === "tracked" && tracking.camera_state === "tracked") {
+      viewerRef.current?.setPaintData({ provisional: [{ id: commandId, position: currentTip, quality: tracking.quality }] });
     }
   };
   const savePoint = () => {
@@ -205,6 +207,8 @@ export function LivePaintingPage() {
   // With a time window > 0, we allow saving even if the probe is lost right now
   // (the backend will search the buffer). Camera must always be tracked.
   const canPaint = state === "running" && reconnectState === "open" && cameraTracked && (probeTracked || windowSec > 0);
+
+  const paintDataDelta = useMemo(() => ({ upsert: recent }), [recent]);
 
   if (loading) return <div className="page"><Skeleton lines={9} /></div>;
   return (
@@ -222,7 +226,7 @@ export function LivePaintingPage() {
           {["draft", "preflight", "recoverable"].includes(state ?? "") ? <PreflightBanner session={session} checks={preflight} busy={busy} onStart={() => void changeLifecycle(state === "recoverable" ? "resume" : "start")} onNew={() => setSession(null)} /> : null}
           <div className="live-layout">
             <div className="live-viewer-wrap">
-              {((session.map_id ?? activeMap?.id) || (localStorage.getItem("spa_workflow_mode") === "aruco_joint")) ? <SpatialViewer ref={viewerRef} mode="live" projectId={projectId} mapId={(session.map_id ?? activeMap?.id) || ""} sessionId={session.id} probeGeometry={probeGeometry} probeTip={probeTip} registration={registrationView} cameraIntrinsics={cameraIntrinsics} /> : <EmptyState title="Session map unavailable">Return to mapping without changing this recoverable session.</EmptyState>}
+              {((session.map_id ?? activeMap?.id) || (localStorage.getItem("spa_workflow_mode") === "aruco_joint")) ? <SpatialViewer ref={viewerRef} mode="live" projectId={projectId} mapId={(session.map_id ?? activeMap?.id) || ""} sessionId={session.id} probeGeometry={probeGeometry} probeTip={probeTip} registration={registrationView} cameraIntrinsics={cameraIntrinsics} paintData={paintDataDelta} /> : <EmptyState title="Session map unavailable">Return to mapping without changing this recoverable session.</EmptyState>}
               <LiveImageOverlay active={Boolean(["running", "paused", "degraded"].includes(state ?? ""))} tracking={tracking} />
               <div className="live-quality-ribbon"><StatusBadge state={tracking?.camera_state ?? "lost"} label={`Camera ${tracking?.camera_state ?? "waiting"}`} /><StatusBadge state={tracking?.probe_state ?? "lost"} label={`Probe ${tracking?.probe_state ?? "waiting"}`} /><StatusBadge state={tracking?.quality ?? "inactive"} label={`Quality ${tracking?.quality ?? "—"}`} /><StatusBadge state={reconnectState} label={`Stream ${reconnectState}`} /></div>
             </div>

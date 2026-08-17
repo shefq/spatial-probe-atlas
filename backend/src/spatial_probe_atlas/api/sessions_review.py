@@ -100,13 +100,27 @@ def annotate_record(request: Request, project_id: str, session_id: str, record_i
     if record["state"] != "needs_annotation":
         raise AppError("RECORD_NOT_ANNOTATABLE", "Record does not need annotation.", status_code=409)
         
-    metrics = record.get("metrics", {})
+    metrics = dict(record.get("metrics", {}))
     t_w_c_list = metrics.get("board_w_c")
+    if not t_w_c_list and getattr(container, "tracking_snapshots", {}).get(session_id):
+        t_w_c_list = container.tracking_snapshots[session_id].get("t_w_c")
     if not t_w_c_list:
         raise AppError("MISSING_CAMERA_POSE", "Record lacks camera pose (board_w_c). Cannot annotate.", status_code=409)
         
     intrinsics = metrics.get("intrinsics")
-    if not intrinsics:
+    if not intrinsics and getattr(container.camera, "latest_frame", None) is not None:
+        intrinsics = list(getattr(container.camera.latest_frame, "intrinsic_matrix", []))
+    if not intrinsics and record.get("image_uri"):
+        full_img_path = container.artifacts.project_path(project_id, record["image_uri"])
+        if full_img_path.exists():
+            img = cv2.imread(str(full_img_path))
+            if img is not None:
+                h, w = img.shape[:2]
+                fx = fy = float(w) * 0.8
+                cx, cy = float(w) / 2.0, float(h) / 2.0
+                intrinsics = [fx, 0.0, cx, 0.0, fy, cy, 0.0, 0.0, 1.0]
+
+    if not intrinsics or len(intrinsics) != 9:
         raise AppError("MISSING_INTRINSICS", "Record lacks intrinsics.", status_code=409)
         
     K = np.asarray(intrinsics, dtype=np.float32).reshape(3, 3)
@@ -265,7 +279,14 @@ def next_tracking(container: Any, project_id: str, session_id: str) -> dict[str,
     sequence = int(container.tracking_sequences.get(session_id, 0))
     calibration = container.catalog.get_resource(project_id, "probe_calibration", session["probe_calibration_id"]) if session.get("probe_calibration_id") else None
     transform = calibration.get("probe", {}).get("t_marker_tip") if calibration else None
-    frame = make_replay_tracking_frame(session_id, sequence, transform)
+
+    from spatial_probe_atlas.pipelines.tracking.runtime import real_tracking_frame
+    real_frame = real_tracking_frame(session_id)
+    if real_frame is not None:
+        frame = real_frame
+    else:
+        frame = make_replay_tracking_frame(session_id, sequence, transform)
+
     container.tracking_sequences[session_id] = sequence + 1
     container.tracking_snapshots[session_id] = frame
     if sequence % 10 == 0:
@@ -301,7 +322,10 @@ def commit_point(
     session = container.catalog.get_resource(project_id, "session", session_id)
     if session["state"] != "running":
         raise AppError("SESSION_NOT_RUNNING", "Points can only be painted while the session is running.", status_code=409)
-    frame = container.tracking_snapshots.get(session_id) or next_tracking(container, project_id, session_id)
+
+    from spatial_probe_atlas.pipelines.tracking.runtime import real_tracking_frame
+    live_frame = real_tracking_frame(session_id)
+    frame = live_frame or container.tracking_snapshots.get(session_id) or next_tracking(container, project_id, session_id)
     accepted, reasons = quality_gate(frame)
     override = str(data.get("low_quality_override_reason") or "").strip()
     save_image = data.get("save_image", False)
@@ -312,14 +336,14 @@ def commit_point(
     # --- Temporal window search for probe tip position ---
     window_tip: list[float] | None = None
     window_entry_count = 0
-    if effective_window_s > 0:
+    if effective_window_s > 0 and hasattr(container, "probe_tip_buffer"):
         import time as _time
         click_t = _time.monotonic_ns()
         half_ns = int(effective_window_s * 1e9)
         lo, hi = click_t - half_ns, click_t + half_ns
         candidates = [
             entry for entry in container.probe_tip_buffer
-            if entry["session_id"] == session_id and lo <= entry["t"] <= hi
+            if entry.get("session_id") == session_id and lo <= entry.get("t", 0) <= hi
         ]
         window_entry_count = len(candidates)
         if candidates:
@@ -327,13 +351,11 @@ def commit_point(
                 tips = np.asarray([c["tip_w_m"] for c in candidates], dtype=float)
                 window_tip = tips.mean(axis=0).tolist()
             else:
-                # Pick the entry closest to click time
                 best = min(candidates, key=lambda e: abs(e["t"] - click_t))
                 window_tip = best["tip_w_m"]
 
-    # Decide final position; probe does not need to be tracked this exact frame if we
-    # found a tip position in the temporal window
-    final_tip = data.get("position_w_m") or window_tip or frame.get("tip_w_m") or []
+    # Decide final position
+    final_tip = data.get("position_w_m") or (live_frame.get("tip_w_m") if live_frame else None) or window_tip or frame.get("tip_w_m") or []
     probe_tracked_via_window = window_tip is not None and not accepted
     
     # Quality gate: reject only if probe is not accepted AND we have no window fallback
@@ -360,21 +382,18 @@ def commit_point(
         
     timestamp = datetime.now(UTC).isoformat()
     
-    probe_tracked = frame.get("probe_state") == "tracked" and isinstance(frame.get("tip_w_m"), list) and len(frame["tip_w_m"]) == 3
+    has_3d_pos = isinstance(position, list) and len(position) == 3 and np.isfinite(position).all()
+    probe_tracked = (frame.get("probe_state") == "tracked" or (live_frame and live_frame.get("probe_state") == "tracked")) and has_3d_pos
     
-    # Determine quality state:
-    # - needs_annotation: probe tip genuinely unavailable AND no window fallback AND image was saved
-    # - window_capture: probe wasn't tracked this exact frame but we found a tip in the time window
-    # - flagged_low_quality: probe was tracked but some other quality metric (camera, latency) failed
-    # - good/tracked: everything passed
-    if save_image and not probe_tracked and not probe_tracked_via_window:
+    # Determine quality state
+    if save_image and not has_3d_pos and not probe_tracked and not probe_tracked_via_window:
         quality_state = "needs_annotation"
     elif probe_tracked_via_window:
         quality_state = "window_capture"
-    elif not accepted:
+    elif not accepted and not has_3d_pos:
         quality_state = "flagged_low_quality"
     else:
-        quality_state = str(data.get("quality") or frame.get("quality", "unknown"))
+        quality_state = "good" if (has_3d_pos or accepted) else str(data.get("quality") or frame.get("quality", "unknown"))
 
     if quality_state == "needs_annotation":
         record_state = "needs_annotation"

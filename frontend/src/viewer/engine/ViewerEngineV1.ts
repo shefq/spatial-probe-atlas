@@ -947,11 +947,11 @@ export class ViewerEngine implements Contract {
   }
   private upsertPaint(record: PaintedPoint | PaintedPath) {
     this.removePaint(record.id);
-    if (record.type === "point" && !record.position_w_m) return;
+    if (record.type === "point" && (!record.position_w_m || record.position_w_m.length !== 3)) return;
     let object: Mesh | Line;
     if (record.type === "point") {
       const color = record.color ? parseInt(record.color.replace("#", "0x")) : (record.deleted ? 0x667487 : record.quality === "good" ? 0x61e2b1 : record.quality === "warning" ? 0xf2bd55 : 0xff7479);
-      object = this.sphere(.0045, color, record.deleted ? .35 : .95);
+      object = this.sphere(.0065, color, record.deleted ? .35 : .95);
       object.position.copy(this.worldToViewer(record.position_w_m!));
       if (record.label || record.value !== undefined) {
         const sprite = makeLabelSprite(record.label || "Point", record.value, record.color || "#ffffff");
@@ -964,9 +964,14 @@ export class ViewerEngine implements Contract {
     object.userData = { recordType: record.type, quality: record.quality, deleted: record.deleted };
     this.paint.add(object);
     this.paintObjects.set(record.id, object);
+    this.visibility();
   }
   private removePaint(id: string) { const object = this.paintObjects.get(id); if (!object) return; object.removeFromParent(); object.geometry.dispose(); const material = object.material; if (Array.isArray(material)) material.forEach((item) => item.dispose()); else material.dispose(); this.paintObjects.delete(id); }
-  private sphere(radius: number, color: number, opacity = 1): Mesh { return new Mesh(new SphereGeometry(radius, 12, 8), new MeshBasicMaterial({ color, transparent: opacity < 1, opacity })); }
+  private sphere(radius: number, color: number, opacity = 1): Mesh {
+    const mesh = new Mesh(new SphereGeometry(radius, 16, 12), new MeshBasicMaterial({ color, transparent: opacity < 1, opacity, depthTest: true }));
+    mesh.renderOrder = 10;
+    return mesh;
+  }
   private recenterTransformPivot(point: Vector3): void {
     this.map.updateMatrixWorld(true);
     const worldMatrix = this.map.matrixWorld.clone();

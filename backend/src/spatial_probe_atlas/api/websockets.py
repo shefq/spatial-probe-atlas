@@ -634,14 +634,33 @@ async def session_tracking(websocket: WebSocket, project_id: str, session_id: st
                     try:
                         save_image = bool(data.get("save_image", False))
                         image_bytes = None
+                        image_intrinsics = None
                         if save_image and container.camera.state == "ready":
                             latest = container.camera.latest_frame
                             if latest is not None:
                                 rgb = np.frombuffer(latest.rgb, dtype=np.uint8).reshape(latest.height, latest.width, 3)
                                 payload_bytes, _ = _encode_frame(rgb, is_rgb=True, quality=90)
                                 image_bytes = payload_bytes
+                                if getattr(latest, "intrinsic_matrix", None) is not None:
+                                    image_intrinsics = list(latest.intrinsic_matrix)
                                 
-                        record = commit_point(container, project_id, session_id, {"command_id": command_id, "frame_id": data.get("frame_id"), "note": "", "low_quality_override_reason": data.get("reason") if data.get("allow_low_quality") else None, "save_image": save_image}, image_bytes=image_bytes)
+                        record = commit_point(
+                            container,
+                            project_id,
+                            session_id,
+                            {
+                                "command_id": command_id,
+                                "frame_id": data.get("frame_id"),
+                                "position_w_m": data.get("position_w_m"),
+                                "note": data.get("note", ""),
+                                "low_quality_override_reason": data.get("reason") if data.get("allow_low_quality") else None,
+                                "save_image": save_image,
+                                "window_s": data.get("window_s", 0.0),
+                                "use_window_average": data.get("use_window_average", False),
+                            },
+                            image_bytes=image_bytes,
+                            image_intrinsics=image_intrinsics,
+                        )
                         snapshot = _session_counts(container, project_id, session_id)
                         await websocket.send_json(_envelope("paint.point_committed", seq, {"command_id": command_id, "record": record, **snapshot}, command_id))
                     except AppError as exc:

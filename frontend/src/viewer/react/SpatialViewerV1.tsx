@@ -133,7 +133,7 @@ export const SpatialViewer = forwardRef<SpatialViewerHandle, SpatialViewerProps>
     if (engineReady && filters) {
       engineRef.current?.setFilters({
         ...filters,
-        ...(viewMode === "mesh" ? { showPoints: false } : {}),
+        ...(viewMode === "mesh" ? { showMap: false } : {}),
       });
     }
   }, [engineReady, filters, viewMode]);
@@ -152,10 +152,10 @@ export const SpatialViewer = forwardRef<SpatialViewerHandle, SpatialViewerProps>
     if (viewMode === "mesh") {
       engineRef.current.loadMesh(projectId, mapId).catch(console.error);
       engineRef.current.setMeshVisibility(true);
-      engineRef.current.setFilters({ showPoints: false });
+      engineRef.current.setFilters({ showMap: false });
     } else {
       engineRef.current.setMeshVisibility(false);
-      engineRef.current.setFilters({ showPoints: true });
+      engineRef.current.setFilters({ showMap: true });
     }
   }, [engineReady, viewMode, projectId, mapId]);
 
