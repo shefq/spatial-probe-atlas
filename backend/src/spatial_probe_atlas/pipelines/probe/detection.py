@@ -94,6 +94,8 @@ def detect_blobs(
     max_err = float(settings.get("maxReprojectionError", 2.5))
     best_err = math.inf
     best_points = points
+    best_rvec = None
+    best_tvec = None
 
     for selection in itertools.combinations(range(len(candidates)), 5):
         sub_pts = candidates[list(selection)]
@@ -107,13 +109,19 @@ def detect_blobs(
             if error < best_err:
                 best_err = error
                 best_points = [points_sorted[i] for i in selection]
+                best_rvec = rvec.copy()
+                best_tvec = tvec.copy()
 
     tracked = math.isfinite(best_err) and best_err <= max_err
-    return {
+    result: dict[str, Any] = {
         "candidate_count": len(points),
         "tracked": tracked,
         "errors": [],
         "keypoints": best_points if tracked else points,
         "reprojection_error_px": best_err if tracked else None,
     }
+    if tracked and best_rvec is not None and best_tvec is not None:
+        result["rvec"] = best_rvec.tolist()
+        result["tvec"] = best_tvec.tolist()
+    return result
 

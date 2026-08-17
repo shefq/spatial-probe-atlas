@@ -573,6 +573,36 @@ def revise_probe(request: Request, project_id: str, calibration_id: str, body: C
     return container.catalog.activate(project_id, "probe_calibration", new_id) if body.activate else result
 
 
+@router.patch("/projects/{project_id}/probe-calibrations/{calibration_id}/tip")
+def update_probe_tip(request: Request, project_id: str, calibration_id: str, body: dict[str, Any]) -> dict[str, Any]:
+    container = request.app.state.container
+    source = container.catalog.get_resource(project_id, "probe_calibration", calibration_id)
+    tip_offset = body.get("tip_offset")
+    if not tip_offset or not isinstance(tip_offset, list) or len(tip_offset) != 3:
+        raise AppError("INVALID_TIP_OFFSET", "Tip offset must be a 3-element [x, y, z] list in metres.", status_code=400)
+    
+    t_marker_tip = [1.0, 0.0, 0.0, float(tip_offset[0]), 0.0, 1.0, 0.0, float(tip_offset[1]), 0.0, 0.0, 1.0, float(tip_offset[2]), 0.0, 0.0, 0.0, 1.0]
+    
+    probe_dict = dict(source.get("probe") or {})
+    probe_dict["t_marker_tip"] = t_marker_tip
+    
+    updated_payload = dict(source)
+    updated_payload["probe"] = probe_dict
+    
+    # Save updated json artifact if present
+    if "artifact" in source:
+        try:
+            artifact_path = container.artifacts.root / source["artifact"]["relative_uri"]
+            if artifact_path.exists():
+                with open(artifact_path, "w", encoding="utf-8") as f:
+                    json.dump(updated_payload, f, indent=2)
+        except Exception as e:
+            print(f"[Probe Tip Update] Failed to overwrite artifact: {e}")
+            
+    updated = container.catalog.update_resource(project_id, "probe_calibration", calibration_id, payload_patch={"probe": probe_dict})
+    return updated
+
+
 @router.get("/projects/{project_id}/registrations")
 def registrations(request: Request, project_id: str) -> dict[str, Any]:
     items = request.app.state.container.catalog.list_resources(project_id, "registration")

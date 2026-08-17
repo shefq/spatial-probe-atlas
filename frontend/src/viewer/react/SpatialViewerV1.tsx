@@ -15,6 +15,7 @@ export interface SpatialViewerProps {
   filters?: ViewerFilters;
   registration?: RegistrationView;
   probeGeometry?: number[][];
+  probeTip?: number[];
   cameraIntrinsics?: { matrix: number[]; width: number; height: number; };
   paintData?: PaintDataDelta;
   onSelectionChange?: (value: ViewerSelection) => void;
@@ -38,7 +39,7 @@ export interface SpatialViewerHandle {
 }
 
 export const SpatialViewer = forwardRef<SpatialViewerHandle, SpatialViewerProps>(function SpatialViewerV1(
-  { mode, projectId, mapId, selection, filters, registration, probeGeometry, cameraIntrinsics, paintData, onMetrics, className = "" }, ref,
+  { mode, projectId, mapId, selection, filters, registration, probeGeometry, probeTip, cameraIntrinsics, paintData, onMetrics, className = "" }, ref,
 ) {
   const containerRef = useRef<HTMLDivElement>(null);
   const engineRef = useRef<ViewerEngine | null>(null);
@@ -138,7 +139,11 @@ export const SpatialViewer = forwardRef<SpatialViewerHandle, SpatialViewerProps>
   }, [engineReady, filters, viewMode]);
   useEffect(() => { if (engineReady && selection) engineRef.current?.setSelection(selection); }, [engineReady, selection]);
   useEffect(() => { if (engineReady && registration) engineRef.current?.setRegistration(registration); }, [engineReady, registration]);
-  useEffect(() => { if (engineReady && probeGeometry) engineRef.current?.setProbeGeometry(probeGeometry); }, [engineReady, probeGeometry]);
+  useEffect(() => {
+    if (engineReady && (probeGeometry || probeTip)) {
+      engineRef.current?.setProbeGeometry(probeGeometry ?? [], probeTip);
+    }
+  }, [engineReady, probeGeometry, probeTip]);
   useEffect(() => { if (engineReady && cameraIntrinsics) engineRef.current?.setCameraIntrinsics(cameraIntrinsics); }, [engineReady, cameraIntrinsics]);
   useEffect(() => { if (engineReady && paintData) engineRef.current?.setPaintData(paintData); }, [engineReady, paintData]);
 

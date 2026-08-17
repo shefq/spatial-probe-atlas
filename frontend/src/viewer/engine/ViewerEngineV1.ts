@@ -125,6 +125,7 @@ export class ViewerEngine implements Contract {
   private initialMapTransform = new Matrix4();
   private filters: ViewerFilters = { showMap: true, showFrames: true, showProbe: true, showBoard: true, showPoints: true, showPaths: true, pointSize: .012, pointBudget: 3_000_000 };
   private probeGeometry: number[][] | null = null;
+  private probeTip: number[] | null = null;
   private probeGroup: Group | null = null;
   private cameraIntrinsics?: { matrix: number[]; width: number; height: number; };
   private isAruco: boolean = false;
@@ -673,8 +674,14 @@ export class ViewerEngine implements Contract {
     this.visibility();
   }
 
-  setProbeGeometry(points: number[][]): void {
+  setProbeGeometry(points: number[][], tip?: number[]): void {
     this.probeGeometry = points;
+    if (tip !== undefined) this.probeTip = tip;
+    this.rebuildProbeGroup();
+  }
+
+  setProbeTip(tip: number[]): void {
+    this.probeTip = tip;
     this.rebuildProbeGroup();
   }
 
@@ -689,19 +696,66 @@ export class ViewerEngine implements Contract {
 
   rebuildProbeGroup(): void {
     if (this.probeGroup) disposeGroup(this.probeGroup);
-    if (!this.probeGeometry) return;
+    if (!this.probeGeometry || this.probeGeometry.length === 0) return;
     this.probeGroup = new Group();
 
     const pts = this.probeGeometry.map(p => new Vector3(p[0], p[1], p[2]));
     const group = this.probeGroup;
+
+    // Yellow constellation line between markers
     const geom = new BufferGeometry().setFromPoints(pts);
     group.add(new Line(geom, new LineBasicMaterial({ color: 0xffea00, linewidth: 2 })));
 
+    // 5 green spheres for the optical markers
     pts.forEach(p => {
-      const s = this.sphere(.004, 0x61e2b1);
+      const s = this.sphere(.0035, 0x61e2b1);
       s.position.copy(p);
       group.add(s);
     });
+
+    // Extract tip offset from calibration
+    let tipVec: Vector3 | null = null;
+    if (this.probeTip && Array.isArray(this.probeTip)) {
+      if (this.probeTip.length === 3) {
+        tipVec = new Vector3(Number(this.probeTip[0]) || 0, Number(this.probeTip[1]) || 0, Number(this.probeTip[2]) || 0);
+      } else if (this.probeTip.length === 16) {
+        const tx = this.probeTip[3] !== 0 || this.probeTip[7] !== 0 || this.probeTip[11] !== 0
+          ? Number(this.probeTip[3]) || 0
+          : Number(this.probeTip[12]) || 0;
+        const ty = this.probeTip[3] !== 0 || this.probeTip[7] !== 0 || this.probeTip[11] !== 0
+          ? Number(this.probeTip[7]) || 0
+          : Number(this.probeTip[13]) || 0;
+        const tz = this.probeTip[3] !== 0 || this.probeTip[7] !== 0 || this.probeTip[11] !== 0
+          ? Number(this.probeTip[11]) || 0
+          : Number(this.probeTip[14]) || 0;
+        tipVec = new Vector3(tx, ty, tz);
+      }
+    }
+
+    if (tipVec) {
+      // Rigid Tip Sphere (5mm radius)
+      const tipMesh = this.sphere(0.005, 0x00f0ff);
+      tipMesh.name = "rigid_tip_sphere";
+      tipMesh.position.copy(tipVec);
+      group.add(tipMesh);
+
+      // Centroid of probe markers
+      const centroid = new Vector3();
+      pts.forEach(p => centroid.add(p));
+      if (pts.length > 0) centroid.divideScalar(pts.length);
+
+      // Needle / Shaft line connecting centroid directly to tip
+      const shaftGeom = new BufferGeometry().setFromPoints([centroid, tipVec]);
+      const shaftLine = new Line(shaftGeom, new LineBasicMaterial({ color: 0x00f0ff, linewidth: 2 }));
+      group.add(shaftLine);
+
+      // Strut lines from markers to tip to form a rigid 3D stylus cage
+      pts.forEach(p => {
+        const strutGeom = new BufferGeometry().setFromPoints([p, tipVec!]);
+        const strutLine = new Line(strutGeom, new LineBasicMaterial({ color: 0x38bdf8, opacity: 0.35, transparent: true }));
+        group.add(strutLine);
+      });
+    }
   }
 
   applyTrackingFrame(value: TrackingViewFrame): void {
@@ -718,6 +772,12 @@ export class ViewerEngine implements Contract {
       const matW = matC.multiply(matM);
       const viewerMat = this.getViewerTransform().multiply(matW);
       viewerMat.decompose(this.probeGroup.position, this.probeGroup.quaternion, this.probeGroup.scale);
+
+      // Dynamically update rigid tip color based on tracking quality
+      const rigidTip = this.probeGroup.getObjectByName("rigid_tip_sphere") as Mesh | undefined;
+      if (rigidTip && rigidTip.material instanceof MeshBasicMaterial) {
+        rigidTip.material.color.set(value.quality === "good" ? 0x00f0ff : value.quality === "warning" ? 0xf2bd55 : 0xff7479);
+      }
 
       const tip = this.tracking.getObjectByName("tip") as Mesh | undefined;
       if (tip) tip.visible = false;

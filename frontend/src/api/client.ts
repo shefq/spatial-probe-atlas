@@ -144,6 +144,7 @@ export const api = {
     import: (projectId: string, validationId: string, activate = true) => request<ProbeCalibration>(`/projects/${projectId}/probe-calibrations/import`, { method: "POST", body: JSON.stringify({ validation_id: validationId, activate }) }),
     activate: (projectId: string, id: string) => request<void>(`/projects/${projectId}/probe-calibrations/${id}/activate`, { method: "POST" }),
     createRevision: (projectId: string, id: string, blob: ProbeCalibration["blob_detector"]) => request<ProbeCalibration>(`/projects/${projectId}/probe-calibrations/${id}/revisions`, { method: "POST", body: JSON.stringify({ blob_detector: blob, activate: true }) }),
+    updateTip: (projectId: string, id: string, tipOffset: number[]) => request<ProbeCalibration>(`/projects/${projectId}/probe-calibrations/${id}/tip`, { method: "PATCH", body: JSON.stringify({ tip_offset: tipOffset }) }),
     download: (projectId: string, id: string) => downloadFromApi(`/projects/${projectId}/probe-calibrations/${id}/download`, "probe_calibration.json"),
   },
   registration: {

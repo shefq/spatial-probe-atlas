@@ -31,10 +31,20 @@ class Catalog(BaseCatalog):
             if kind in {"scene_map", "probe_calibration"} and project.active_registration_id:
                 registration = session.get(ResourceRecord, project.active_registration_id)
                 if registration is not None and registration.project_id == project_id:
-                    registration.state = "superseded"
-                    registration.revision += 1
-                    registration.updated_at = utcnow()
-                project.active_registration_id = None
+                    payload = dict(registration.payload or {})
+                    if payload.get("is_aruco_mode") or kind == "probe_calibration":
+                        if kind == "probe_calibration":
+                            payload["probe_calibration_id"] = resource_id
+                        if kind == "scene_map":
+                            payload["map_id"] = resource_id
+                        registration.payload = payload
+                        registration.revision += 1
+                        registration.updated_at = utcnow()
+                    else:
+                        registration.state = "superseded"
+                        registration.revision += 1
+                        registration.updated_at = utcnow()
+                        project.active_registration_id = None
 
             setattr(project, column, resource_id)
             project.revision += 1

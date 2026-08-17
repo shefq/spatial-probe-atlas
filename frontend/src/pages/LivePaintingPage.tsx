@@ -2,9 +2,10 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { api, errorMessage } from "../api/client";
 import { ReconnectingSocket, type BinaryStreamMessage } from "../api/streams";
-import type { PaintedPoint, PaintedRecord, PreflightCheck, SessionSnapshot, SessionState, TrackingViewFrame, WsEnvelope } from "../api/types";
+import type { PaintedPoint, PaintedRecord, PreflightCheck, ProbeCalibration, SessionSnapshot, SessionState, TrackingViewFrame, WsEnvelope } from "../api/types";
 import { SpatialViewer, type SpatialViewerHandle } from "../viewer/react/SpatialViewer";
 import { ManualAnnotationModal } from "../components/ManualAnnotationModal";
+import { ProbeTipAdjustmentModal } from "../features/probe/ProbeTipAdjustmentModal";
 import { Button, Card, EmptyState, Field, InlineAlert, Metric, Modal, Segmented, Skeleton, StatusBadge, TextInput, Toggle } from "../components/ui";
 import { useCameraStore, useLiveSessionStore, useProjectStore, useUiStore } from "../stores";
 import { formatBytes, formatCoordinate, formatCount, formatDate, formatDuration } from "../utils/format";
@@ -47,6 +48,9 @@ export function LivePaintingPage() {
   const [overrideReason, setOverrideReason] = useState("");
   const [backgroundContinue, setBackgroundContinue] = useState(false);
   const [probeGeometry, setProbeGeometry] = useState<number[][] | undefined>();
+  const [probeTip, setProbeTip] = useState<number[] | undefined>();
+  const [activeCalibration, setActiveCalibration] = useState<ProbeCalibration | null>(null);
+  const [tipModalOpen, setTipModalOpen] = useState(false);
   const [boardDefinition, setBoardDefinition] = useState<any>();
   const [isArucoMode, setIsArucoMode] = useState<boolean>(false);
   const [annotateRecord, setAnnotateRecord] = useState<PaintedRecord | null>(null);
@@ -59,7 +63,9 @@ export function LivePaintingPage() {
     if (!project?.active_probe_calibration_id) return;
     const controller = new AbortController();
     api.probe.get(projectId, project.active_probe_calibration_id, controller.signal).then(cal => {
+      setActiveCalibration(cal);
       setProbeGeometry(cal.probe?.marker_points_m);
+      setProbeTip(cal.probe?.t_marker_tip);
     }).catch(() => {});
     return () => controller.abort();
   }, [projectId, project?.active_probe_calibration_id]);
@@ -213,10 +219,10 @@ export function LivePaintingPage() {
         </div>
       ) : (
         <>
-          {["draft", "preflight", "recoverable"].includes(state ?? "") ? <PreflightBanner session={session} checks={preflight} busy={busy} onStart={() => void changeLifecycle(state === "recoverable" ? "resume" : "start")} /> : null}
+          {["draft", "preflight", "recoverable"].includes(state ?? "") ? <PreflightBanner session={session} checks={preflight} busy={busy} onStart={() => void changeLifecycle(state === "recoverable" ? "resume" : "start")} onNew={() => setSession(null)} /> : null}
           <div className="live-layout">
             <div className="live-viewer-wrap">
-              {((session.map_id ?? activeMap?.id) || (localStorage.getItem("spa_workflow_mode") === "aruco_joint")) ? <SpatialViewer ref={viewerRef} mode="live" projectId={projectId} mapId={(session.map_id ?? activeMap?.id) || ""} sessionId={session.id} probeGeometry={probeGeometry} registration={registrationView} cameraIntrinsics={cameraIntrinsics} /> : <EmptyState title="Session map unavailable">Return to mapping without changing this recoverable session.</EmptyState>}
+              {((session.map_id ?? activeMap?.id) || (localStorage.getItem("spa_workflow_mode") === "aruco_joint")) ? <SpatialViewer ref={viewerRef} mode="live" projectId={projectId} mapId={(session.map_id ?? activeMap?.id) || ""} sessionId={session.id} probeGeometry={probeGeometry} probeTip={probeTip} registration={registrationView} cameraIntrinsics={cameraIntrinsics} /> : <EmptyState title="Session map unavailable">Return to mapping without changing this recoverable session.</EmptyState>}
               <LiveImageOverlay active={Boolean(["running", "paused", "degraded"].includes(state ?? ""))} tracking={tracking} />
               <div className="live-quality-ribbon"><StatusBadge state={tracking?.camera_state ?? "lost"} label={`Camera ${tracking?.camera_state ?? "waiting"}`} /><StatusBadge state={tracking?.probe_state ?? "lost"} label={`Probe ${tracking?.probe_state ?? "waiting"}`} /><StatusBadge state={tracking?.quality ?? "inactive"} label={`Quality ${tracking?.quality ?? "—"}`} /><StatusBadge state={reconnectState} label={`Stream ${reconnectState}`} /></div>
             </div>
@@ -225,7 +231,7 @@ export function LivePaintingPage() {
                 <div className="button-row live-lifecycle">{state === "running" ? <Button onClick={() => void changeLifecycle("pause")} busy={busy}>Ⅱ Pause</Button> : state === "paused" || state === "degraded" || state === "recoverable" ? <Button variant="primary" onClick={() => void changeLifecycle("resume")} busy={busy}>▶ Resume</Button> : null}{["running", "paused", "degraded"].includes(state ?? "") ? <Button variant="danger" onClick={() => void changeLifecycle("stop")} busy={busy}>■ Stop</Button> : null}{state === "stopped" ? <Button variant="primary" onClick={() => void changeLifecycle("finalize")} busy={busy}>Finalize & review</Button> : null}</div>
                 <Toggle label="Continue live processing in background" checked={backgroundContinue} onChange={(event) => setBackgroundContinue(event.target.checked)} />
               </Card>
-              <Card title="Tip position" eyebrow="WORLD FRAME W · METRES STORED"><div className="coordinate-grid"><span><small>X</small>{formatCoordinate(tracking?.tip_w_m?.[0], units)}</span><span><small>Y</small>{formatCoordinate(tracking?.tip_w_m?.[1], units)}</span><span><small>Z</small>{formatCoordinate(tracking?.tip_w_m?.[2], units)}</span></div><div className="metric-grid"><Metric label="Camera inliers" value={tracking?.camera_inliers ?? "—"} /><Metric label="Probe inliers" value={tracking?.probe_inliers == null ? "—" : `${tracking.probe_inliers}/5`} /><Metric label="FPS" value={tracking?.fps?.toFixed(1) ?? "—"} /><Metric label="Latency" value={tracking?.latency_ms == null ? "—" : `${tracking.latency_ms.toFixed(0)} ms`} tone={(tracking?.latency_ms ?? 0) > 100 ? "warning" : undefined} /></div></Card>
+              <Card title="Tip position" eyebrow="WORLD FRAME W · METRES STORED" actions={<Button size="sm" onClick={() => setTipModalOpen(true)}>🎯 Adjust tip</Button>}><div className="coordinate-grid"><span><small>X</small>{formatCoordinate(tracking?.tip_w_m?.[0], units)}</span><span><small>Y</small>{formatCoordinate(tracking?.tip_w_m?.[1], units)}</span><span><small>Z</small>{formatCoordinate(tracking?.tip_w_m?.[2], units)}</span></div><div className="metric-grid"><Metric label="Camera inliers" value={tracking?.camera_inliers ?? "—"} /><Metric label="Probe inliers" value={tracking?.probe_inliers == null ? "—" : `${tracking.probe_inliers}/5`} /><Metric label="FPS" value={tracking?.fps?.toFixed(1) ?? "—"} /><Metric label="Latency" value={tracking?.latency_ms == null ? "—" : `${tracking.latency_ms.toFixed(0)} ms`} tone={(tracking?.latency_ms ?? 0) > 100 ? "warning" : undefined} /></div></Card>
               <Card title="Painting" eyebrow="READY" actions={<StatusBadge state={canPaint ? "ready" : "inactive"} label={canPaint ? "Ready" : "Waiting"} />}>
                 <div className="paint-primary"><div style={{ display: "inline-flex", alignItems: "center", gap: "8px" }}><Button variant="primary" disabled={!canPaint} onClick={savePoint}>＋ Save point</Button>{state === "running" && !cameraTracked ? <small className="color-warning" style={{ color: "#f2bd55", fontWeight: 500, fontSize: "11px" }}>Camera tracking lost</small> : state === "running" && cameraTracked && !probeTracked && windowSec > 0 ? <small style={{ color: "#7dd3fc", fontWeight: 500, fontSize: "11px" }}>Window capture (±{windowSec.toFixed(1)} s)</small> : null}</div><Button disabled={!recent.length} onClick={undo}>↶ Undo last</Button><Button onClick={() => viewerRef.current?.resetView()}>Focus probe</Button></div>
                 <div className="paint-counts"><Metric label="Points" value={formatCount(session.point_count)} /><Metric label="Session size" value={formatBytes(session.size_bytes)} /></div>
@@ -251,6 +257,19 @@ export function LivePaintingPage() {
       )}
       <Modal open={lowQualityOpen} title="Save a low-quality point?" description="An explicit reason is required and will be exported with the flagged record." onRequestClose={() => setLowQualityOpen(false)} size="sm" footer={<><Button onClick={() => setLowQualityOpen(false)}>Cancel</Button><Button variant="danger" disabled={overrideReason.trim().length < 3} onClick={() => { sendPoint(overrideReason.trim()); setOverrideReason(""); setLowQualityOpen(false); }}>Save flagged point</Button></>}><Field label="Reason" hint="At least 3 characters; do not include patient-identifying information."><TextInput value={overrideReason} maxLength={240} onChange={(event) => setOverrideReason(event.target.value)} placeholder="e.g. Intentional edge sample" /></Field></Modal>
       <ManualAnnotationModal open={!!annotateRecord} projectId={projectId} sessionId={session?.id ?? ""} record={annotateRecord} onClose={() => setAnnotateRecord(null)} onSuccess={(updated) => { setAnnotateRecord(null); setRecent(r => [updated, ...r.filter(x => x.id !== updated.id)].slice(0, 30)); viewerRef.current?.setPaintData({ upsert: [updated] }); }} />
+      {activeCalibration ? (
+        <ProbeTipAdjustmentModal
+          open={tipModalOpen}
+          projectId={projectId}
+          calibration={activeCalibration}
+          onClose={() => setTipModalOpen(false)}
+          onSaved={(saved) => {
+            setActiveCalibration(saved);
+            setProbeGeometry(saved.probe?.marker_points_m);
+            setProbeTip(saved.probe?.t_marker_tip);
+          }}
+        />
+      ) : null}
     </div>
   );
 }
@@ -259,9 +278,28 @@ function Preflight({ checks }: { checks: PreflightCheck[] }) {
   return <Card title="Preflight" eyebrow="ALL REQUIRED"><div className="preflight-checks">{checks.map((check) => <div key={check.key} className={check.passed ? "is-passed" : "is-failed"}><span>{check.passed ? "✓" : "×"}</span><div><strong>{check.label}</strong>{check.detail ? <small>{check.detail}</small> : null}</div>{!check.passed && check.required_route ? <Link to={check.required_route}>Resolve →</Link> : null}</div>)}</div></Card>;
 }
 
-function PreflightBanner({ session, checks, busy, onStart }: { session: SessionSnapshot; checks: PreflightCheck[]; busy: boolean; onStart: () => void }) {
+function PreflightBanner({ session, checks, busy, onStart, onNew }: { session: SessionSnapshot; checks: PreflightCheck[]; busy: boolean; onStart: () => void; onNew?: () => void }) {
   const passed = checks.every((check) => check.passed);
-  return <InlineAlert tone={passed ? "success" : "warning"} title={session.state === "recoverable" ? "Recoverable session found" : passed ? "Preflight passed" : "Preflight blocked"} action={<Button variant="primary" busy={busy} disabled={!passed && session.state !== "recoverable"} onClick={onStart}>{session.state === "recoverable" ? "Resume session" : "Start session"}</Button>}>{passed ? "The exact map, probe and registration revisions are locked for this session." : checks.filter((check) => !check.passed).map((check) => check.label).join(" · ")}</InlineAlert>;
+  return (
+    <InlineAlert
+      tone={passed ? "success" : "warning"}
+      title={session.state === "recoverable" ? "Recoverable session found" : passed ? "Preflight passed" : "Preflight blocked"}
+      action={
+        <div className="button-row" style={{ display: "flex", gap: "8px" }}>
+          {session.state === "draft" || session.state === "preflight" ? (
+            <Button size="sm" onClick={onNew}>
+              ＋ New session
+            </Button>
+          ) : null}
+          <Button variant="primary" busy={busy} onClick={onStart}>
+            {session.state === "recoverable" ? "Resume session" : "Start session"}
+          </Button>
+        </div>
+      }
+    >
+      {passed ? "The exact map, probe and registration revisions are locked for this session." : checks.filter((check) => !check.passed).map((check) => check.label).join(" · ")}
+    </InlineAlert>
+  );
 }
 
 function RecentRecords({ records, units, projectId, sessionId, onAnnotate }: { records: PaintedRecord[]; units: "mm" | "m"; projectId: string; sessionId: string; onAnnotate: (record: PaintedRecord) => void }) {

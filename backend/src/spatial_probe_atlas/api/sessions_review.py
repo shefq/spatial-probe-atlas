@@ -232,7 +232,18 @@ def _lifecycle(container: Any, project_id: str, session_id: str, action: str) ->
             container.catalog.update_resource(project_id, "session", session_id, state="preflight")
             raise AppError("SESSION_PREFLIGHT_FAILED", "Session preflight has unmet requirements.", status_code=409, details={"checks": checks})
     if action == "start":
+        project = container.catalog.get_project(project_id)
+        scene_map = container.catalog.get_resource(project_id, "scene_map", project["active_map_id"]) if project.get("active_map_id") else None
+        probe_calibration = container.catalog.get_resource(project_id, "probe_calibration", project["active_probe_calibration_id"]) if project.get("active_probe_calibration_id") else None
+        registration = container.catalog.get_resource(project_id, "registration", project["active_registration_id"]) if project.get("active_registration_id") else None
+
         patch["started_at"] = datetime.now(UTC).isoformat()
+        patch["map_id"] = project.get("active_map_id")
+        patch["probe_calibration_id"] = project.get("active_probe_calibration_id")
+        patch["registration_id"] = project.get("active_registration_id")
+        patch["map_revision"] = scene_map["revision"] if scene_map else None
+        patch["probe_calibration_revision"] = probe_calibration["revision"] if probe_calibration else None
+        patch["registration_revision"] = registration["revision"] if registration else None
         container.tracking_sequences[session_id] = 0
     if action in {"stop", "finalize"}:
         patch["ended_at"] = session.get("ended_at") or datetime.now(UTC).isoformat()

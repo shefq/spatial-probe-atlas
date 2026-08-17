@@ -5,10 +5,25 @@ import { probeWorkflowApi, type ProbeCapture } from "../api/probeWorkflows";
 import { parseBinaryMessage, ReconnectingSocket } from "../api/streams";
 import type { CalibrationValidation, ProbeCalibration, ProbeTestMetrics, Registration, TrackingViewFrame } from "../api/types";
 import { BlobDetectorTuningModal } from "../features/probe/BlobDetectorTuningModal";
+import { ProbeTipAdjustmentModal } from "../features/probe/ProbeTipAdjustmentModal";
 import { SpatialViewer } from "../viewer/react/SpatialViewer";
 import { Button, Card, EmptyState, Field, InlineAlert, Metric, Modal, ProgressBar, Segmented, Skeleton, StatusBadge, TextInput } from "../components/ui";
 import { useCameraStore, useProjectStore, useUiStore } from "../stores";
 import { formatCount, formatDate } from "../utils/format";
+
+function parseTipOffsetM(t_marker_tip?: number[]): [number, number, number] {
+  if (!t_marker_tip || !Array.isArray(t_marker_tip)) return [0, 0, 0.15];
+  if (t_marker_tip.length === 3) {
+    return [t_marker_tip[0], t_marker_tip[1], t_marker_tip[2]];
+  }
+  if (t_marker_tip.length === 16) {
+    const tx = t_marker_tip[3] !== 0 || t_marker_tip[7] !== 0 || t_marker_tip[11] !== 0 ? t_marker_tip[3] : t_marker_tip[12];
+    const ty = t_marker_tip[3] !== 0 || t_marker_tip[7] !== 0 || t_marker_tip[11] !== 0 ? t_marker_tip[7] : t_marker_tip[13];
+    const tz = t_marker_tip[3] !== 0 || t_marker_tip[7] !== 0 || t_marker_tip[11] !== 0 ? t_marker_tip[11] : t_marker_tip[14];
+    return [tx || 0, ty || 0, tz || 0];
+  }
+  return [0, 0, 0.15];
+}
 
 export function ProbeRegistrationPage() {
   const { projectId = "" } = useParams();
@@ -24,6 +39,7 @@ export function ProbeRegistrationPage() {
   const [probeMetrics, setProbeMetrics] = useState<ProbeTestMetrics>({ blob_count: 0, candidate_count: 0, inliers: 0, tracked: false });
   const [testState, setTestState] = useState("closed");
   const [tuningOpen, setTuningOpen] = useState(false);
+  const [tipModalOpen, setTipModalOpen] = useState(false);
   const [capture, setCapture] = useState<ProbeCapture | null>(null);
   const [calibrationName, setCalibrationName] = useState("Five-marker probe calibration");
   const [validation, setValidation] = useState<CalibrationValidation | null>(null);
@@ -80,14 +96,16 @@ export function ProbeRegistrationPage() {
   }, [cameraReady, projectId, selectedCalibrationId]);
   const viewerRef = useRef<import("../viewer/react/SpatialViewerV1").SpatialViewerHandle>(null);
 
+  const selectedCalibration = calibrations.find((item) => item.id === selectedCalibrationId);
+  const selectedRegistration = registrations.find((item) => item.id === selectedRegistrationId);
+
   useEffect(() => {
-    if (!cameraReady || tuningOpen) {
+    if (!cameraReady || tuningOpen || tipModalOpen) {
       setOverlayUrl(null);
       return;
     }
     const stream = new ReconnectingSocket(`/ws/v1/projects/${projectId}/probe-tuning`, {
       onBinary: (message) => {
-        const kind = String(message.header.kind ?? "");
         const encoding = String(message.header?.encoding ?? "jpeg");
         const mime = encoding.includes("png") ? "image/png" : "image/jpeg";
         const url = URL.createObjectURL(new Blob([message.payload], { type: mime }));
@@ -99,17 +117,19 @@ export function ProbeRegistrationPage() {
     if (selectedCalibrationId) {
       stream.send("subscribe", { calibration_id: selectedCalibrationId });
     }
-    if (workflowMode === "aruco_joint") {
-      const parsedIds = arucoIdsStr.split(",").map((s) => parseInt(s.trim(), 10)).filter((n) => !isNaN(n));
-      stream.send("tuning.patch", { marker_ids: parsedIds });
-    }
+    const parsedIds = workflowMode === "aruco_joint" ? arucoIdsStr.split(",").map((s) => parseInt(s.trim(), 10)).filter((n) => !isNaN(n)) : undefined;
+    const tipM = parseTipOffsetM(selectedCalibration?.probe?.t_marker_tip);
+    stream.send("tuning.patch", {
+      marker_ids: parsedIds,
+      tip_offset: tipM,
+    });
     return () => {
       stream.close();
       overlayObjectUrls.current.forEach(URL.revokeObjectURL);
       overlayObjectUrls.current = [];
       setOverlayUrl(null);
     };
-  }, [cameraReady, projectId, selectedCalibrationId, tuningOpen]);
+  }, [cameraReady, projectId, selectedCalibrationId, selectedCalibration?.probe?.t_marker_tip, selectedCalibration?.probe?.marker_points_m, tuningOpen, tipModalOpen, workflowMode, arucoIdsStr]);
 
   useEffect(() => {
     if (!cameraReady) {
@@ -149,8 +169,6 @@ export function ProbeRegistrationPage() {
     }
   }, [workflowMode, selectedCalibrationId, registrations, selectedRegistrationId]);
 
-  const selectedCalibration = calibrations.find((item) => item.id === selectedCalibrationId);
-  const selectedRegistration = registrations.find((item) => item.id === selectedRegistrationId);
   
   const registrationView = useMemo(() => ({
     t_w_b: selectedRegistration?.t_w_b ?? (activeMap as any)?.similarity_s_w_m0?.translation, 
@@ -352,7 +370,7 @@ export function ProbeRegistrationPage() {
           <Card className="viewer-card registration-workspace-card" title="Registration workspace" eyebrow={workflowMode === "aruco_joint" ? "ARUCO BOARD" : (activeMap?.name ?? "MAP REQUIRED")} actions={<><Segmented label="View mode" value={viewMode} options={[{ value: "points", label: "Points" }, { value: "mesh", label: "Mesh" }]} onChange={(v) => setViewMode(v as "points" | "mesh")} /><StatusBadge state={selectedRegistration?.validation_state ?? "pending"} /></>}>
             <div className="registration-workspace-layout">
               <div className="registration-viewer-wrap">
-                {activeMap || workflowMode === "aruco_joint" ? <SpatialViewer ref={viewerRef} mode="registration" projectId={projectId} mapId={activeMap?.id ?? ""} registration={registrationView} probeGeometry={selectedCalibration?.probe?.marker_points_m} /> : <div className="viewer-empty"><EmptyState icon="⌖" title="No active reference map">Return to Mapping and activate a validated point cloud.</EmptyState></div>}
+                {activeMap || workflowMode === "aruco_joint" ? <SpatialViewer ref={viewerRef} mode="registration" projectId={projectId} mapId={activeMap?.id ?? ""} registration={registrationView} probeGeometry={selectedCalibration?.probe?.marker_points_m} probeTip={selectedCalibration?.probe?.t_marker_tip} /> : <div className="viewer-empty"><EmptyState icon="⌖" title="No active reference map">Return to Mapping and activate a validated point cloud.</EmptyState></div>}
               </div>
               <div className="registration-record3d-widget">
                 <div className="record3d-widget-header">
@@ -401,7 +419,10 @@ export function ProbeRegistrationPage() {
                   <Metric label="Candidates" value={probeMetrics.candidate_count} />
                   <Metric label="Error" value={probeMetrics.reprojection_error_px == null ? "—" : `${probeMetrics.reprojection_error_px.toFixed(2)} px`} />
                 </div>
-                <Button variant="primary" disabled={!selectedCalibration || !cameraReady} onClick={() => setTuningOpen(true)}>Can’t track the probe?</Button>
+                <div className="button-row" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "8px", marginTop: "8px" }}>
+                  <Button size="sm" disabled={!selectedCalibration || !cameraReady} onClick={() => setTuningOpen(true)}>Blob detector</Button>
+                  <Button variant="primary" size="sm" disabled={!selectedCalibration || !cameraReady} onClick={() => setTipModalOpen(true)}>🎯 Adjust tip</Button>
+                </div>
               </div>
             </div>
           </Card>
@@ -493,7 +514,7 @@ export function ProbeRegistrationPage() {
         <aside className="workflow-sidebar">
           <Card title="Calibration library" eyebrow="REUSABLE JSON" actions={<div className="button-row"><Button size="sm" onClick={() => navigate("/probe-designer")} title="Open Probe Designer & Blender Generator">📐 CAD Designer</Button><label className="button button--default button--sm file-button">Upload<input type="file" accept=".json,application/json" onChange={(event) => { const file = event.target.files?.[0]; if (file) void validateImport(file); event.target.value = ""; }} /></label></div>}>
             {calibrations.length ? <div className="calibration-list">{calibrations.map((calibration) => <button className={selectedCalibrationId === calibration.id ? "is-selected" : ""} key={calibration.id} onClick={() => setSelectedCalibrationId(calibration.id)}><span><strong>{calibration.name}</strong><small>r{calibration.revision} · {formatDate(calibration.created_at)} · {calibration.quality.rms_reprojection_error_px.toFixed(2)} px</small></span><StatusBadge state={calibration.active ? "active" : calibration.state} /></button>)}</div> : <p className="muted">Create from images or upload a complete versioned probe_calibration.json.</p>}
-            {selectedCalibration ? <div className="button-row"><Button size="sm" onClick={() => api.probe.download(projectId, selectedCalibration.id)}>Download JSON</Button>{!selectedCalibration.active ? <Button size="sm" variant="primary" busy={busy} onClick={() => void activateCalibration(selectedCalibration)}>Activate</Button> : null}</div> : null}
+            {selectedCalibration ? <div className="button-row"><Button size="sm" onClick={() => api.probe.download(projectId, selectedCalibration.id)}>Download JSON</Button><Button size="sm" onClick={() => setTipModalOpen(true)}>🎯 Adjust Tip</Button>{!selectedCalibration.active ? <Button size="sm" variant="primary" busy={busy} onClick={() => void activateCalibration(selectedCalibration)}>Activate</Button> : null}</div> : null}
           </Card>
           {workflowMode !== "aruco_joint" ? (
             <Card title="Create probe calibration" eyebrow="3 MIN · 15–25 RECOMMENDED">
@@ -509,7 +530,12 @@ export function ProbeRegistrationPage() {
           ) : null}
         </aside>
       </div>
-      {selectedCalibration ? <BlobDetectorTuningModal open={tuningOpen} projectId={projectId} calibration={selectedCalibration} onClose={() => setTuningOpen(false)} onSaved={(saved) => { setCalibrations((items) => [saved, ...items.map((item) => ({ ...item, active: false }))]); setSelectedCalibrationId(saved.id); }} /> : null}
+      {selectedCalibration ? (
+        <>
+          <BlobDetectorTuningModal open={tuningOpen} projectId={projectId} calibration={selectedCalibration} onClose={() => setTuningOpen(false)} onSaved={(saved) => { setCalibrations((items) => [saved, ...items.map((item) => ({ ...item, active: false }))]); setSelectedCalibrationId(saved.id); }} />
+          <ProbeTipAdjustmentModal open={tipModalOpen} projectId={projectId} calibration={selectedCalibration} onClose={() => setTipModalOpen(false)} onSaved={(saved) => { setCalibrations((items) => items.map((item) => (item.id === saved.id ? saved : item))); setSelectedCalibrationId(saved.id); }} />
+        </>
+      ) : null}
       <Modal open={importOpen} title="Import probe calibration" description="Validation is staged and has not changed the project." onRequestClose={() => setImportOpen(false)} size="sm" footer={<><Button onClick={() => setImportOpen(false)}>Cancel</Button><Button variant="primary" busy={busy} disabled={!validation?.valid} onClick={() => void importCalibration()}>Import & activate</Button></>}>
         {validation?.valid ? <><InlineAlert tone="success" title="Calibration passed validation">{validation.summary?.marker_point_count ?? 5} unique marker points · {validation.summary?.units ?? "m"} · RMS {validation.summary?.calibration_rms_px?.toFixed(2) ?? "—"} px</InlineAlert>{validation.warnings.map((warning) => <InlineAlert key={warning} tone="warning" title="Validation warning">{warning}</InlineAlert>)}</> : <InlineAlert tone="danger" title="Calibration was rejected">{validation?.errors?.map((item) => `${item.path}: ${item.message}`).join(" · ")}</InlineAlert>}
       </Modal>

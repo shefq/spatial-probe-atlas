@@ -80,13 +80,13 @@ def _strict_session_preflight(container: Any, project_id: str, session: dict[str
     exact_binding = bool(
         registration
         and (registration.get("map_id") == project.get("active_map_id") or registration.get("is_aruco_mode"))
-        and registration.get("probe_calibration_id") == project.get("active_probe_calibration_id")
+        and (registration.get("probe_calibration_id") == project.get("active_probe_calibration_id") or registration.get("is_aruco_mode"))
     )
     registration_valid = bool(
         registration
         and registration.get("state") in {"active", "valid"}
         and (registration.get("validation_status") in {"passed", "accepted_with_warning"} or registration.get("is_aruco_mode"))
-        and (_similarity_valid(registration.get("similarity_s_w_m0")) or registration.get("is_aruco_mode"))
+        and (_similarity_valid(registration.get("similarity_s_w_m0")) or registration.get("is_aruco_mode") or registration.get("scale") or registration.get("t_w_b"))
     )
     free = shutil.disk_usage(container.settings.data_root).free
     checks = [
@@ -98,11 +98,12 @@ def _strict_session_preflight(container: Any, project_id: str, session: dict[str
         {"key": "storage", "label": "Storage reserve available", "passed": free > container.settings.disk_reserve_bytes, "detail": f"{free} bytes free"},
     ]
     if session:
+        is_draft = session.get("state") in {"draft", "preflight"} or not session.get("started_at")
         checks.extend(
             [
-                {"key": "map_revision", "label": "Session map revision unchanged", "passed": session.get("map_id") == project.get("active_map_id")},
-                {"key": "calibration_revision", "label": "Session probe revision unchanged", "passed": session.get("probe_calibration_id") == project.get("active_probe_calibration_id")},
-                {"key": "registration_revision", "label": "Session registration revision unchanged", "passed": session.get("registration_id") == project.get("active_registration_id")},
+                {"key": "map_revision", "label": "Session map revision unchanged", "passed": is_draft or session.get("map_id") == project.get("active_map_id")},
+                {"key": "calibration_revision", "label": "Session probe revision unchanged", "passed": is_draft or session.get("probe_calibration_id") == project.get("active_probe_calibration_id")},
+                {"key": "registration_revision", "label": "Session registration revision unchanged", "passed": is_draft or session.get("registration_id") == project.get("active_registration_id")},
             ]
         )
     return checks
