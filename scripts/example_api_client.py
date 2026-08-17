@@ -39,31 +39,18 @@ except ImportError:
     print("Please install required packages: pip install requests websockets")
     sys.exit(1)
 
-LABELS = [
-    "Tumor Margin",
-    "Target Alpha",
-    "Surface Landmark",
-    "Biopsy Site #1",
-    "Fiducial Reference",
-    "Resection Boundary",
-    "Vascular Landmark",
-    "Critical Structure",
-    "Entry Trajectory",
-    "Depth Anchor",
-]
-
-COLORS = [
-    "#00ffcc",  # Neon Cyan
-    "#ff007f",  # Vibrant Pink
-    "#3388ff",  # Royal Blue
-    "#ffaa00",  # Bright Amber
-    "#7928ca",  # Deep Violet
-    "#50e3c2",  # Emerald Turquoise
-    "#f5a623",  # Tangerine
-    "#00df8f",  # Mint Green
-    "#ff3366",  # Crimson Neon
-    "#ffff00",  # Electric Yellow
-]
+TISSUE_COLORS: dict[str, str] = {
+    "Fat": "#f5a623",         # Warm Orange / Fat
+    "Water": "#0070f3",       # Pure Blue / Hydration
+    "Tumor": "#ff007f",       # Vibrant Magenta / Lesion
+    "Collagen": "#00df8f",    # Mint Green / Connective
+    "Necrosis": "#7928ca",    # Deep Violet / Necrotic
+    "Muscle": "#ff3366",      # Crimson / Striated Muscle
+    "Blood": "#e00000",       # Blood Red / Vascular
+    "Lipid": "#ffff00",       # Bright Yellow / Lipid
+    "Stroma": "#50e3c2",      # Turquoise / Stroma
+    "Epithelium": "#3388ff",  # Royal Blue / Epithelial
+}
 
 
 class SpatialProbeAtlasClient:
@@ -196,7 +183,7 @@ async def run_point_emitter(
     project_id: str,
     session_id: str,
     session_name: str,
-    interval_sec: float = 5.0,
+    interval_sec: float = 8.0,
     manual_coords: bool = False,
 ) -> None:
     print(f"\n" + "=" * 75)
@@ -212,10 +199,11 @@ async def run_point_emitter(
     while True:
         point_num += 1
 
-        label = random.choice(LABELS)
-        color = random.choice(COLORS)
-        val = round(random.uniform(1.0, 9.9), 2)
-        note = f"External API Trigger #{point_num}"
+        label = random.choice(list(TISSUE_COLORS.keys()))
+        color = TISSUE_COLORS[label]
+        pct = round(random.uniform(5.0, 95.0), 1)
+        val = pct
+        note = f"{label} concentration: {pct}%"
 
         manual_pos = None
         if manual_coords:
@@ -247,7 +235,7 @@ async def run_point_emitter(
 
             print(
                 f"[{timestamp}] Trigger #{point_num:03d} -> "
-                f"Label: '{label:<19}' | Color: {color} | "
+                f"Tissue: {label:<10} | Value: {pct:5.1f}% | Color: {color} | "
                 f"Pos: {pos_str:<32} | Quality: {quality}"
             )
         except requests.HTTPError as exc:
