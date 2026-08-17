@@ -308,7 +308,54 @@ function PreflightBanner({ session, checks, busy, onStart, onNew }: { session: S
 
 function RecentRecords({ records, units, projectId, sessionId, onAnnotate }: { records: PaintedRecord[]; units: "mm" | "m"; projectId: string; sessionId: string; onAnnotate: (record: PaintedRecord) => void }) {
   if (!records.length) return <p className="muted">No committed paint records yet.</p>;
-  return <div className="data-table"><div className="data-table__head"><span>Time</span><span>Type</span><span>Position / samples</span><span>Quality</span><span>Note</span></div>{records.slice(0, 12).map((record) => <div className="data-table__row" key={record.id}><span>{formatDate(record.type === "point" ? record.timestamp : record.started_at)}</span><span>{record.type}</span><span>{record.type === "point" ? (record.position_w_m?.length === 3 ? record.position_w_m.map((value) => formatCoordinate(value, units)).join(" · ") : (record.image_uri ? <div style={{ display: "flex", alignItems: "center", gap: "12px" }}><img src={`/api/v1/projects/${projectId}/sessions/${sessionId}/painted-records/${record.id}/image`} alt="Capture" style={{ height: "40px", borderRadius: "4px", objectFit: "cover" }} /><Button size="sm" onClick={() => onAnnotate(record)}>Annotate</Button></div> : "Needs Annotation")) : `${record.sample_count} samples`}</span><span><StatusBadge state={record.quality} /></span><span>{record.note ?? "—"}</span></div>)}</div>;
+  return (
+    <div className="data-table">
+      <div className="data-table__head">
+        <span>Time</span>
+        <span>Type</span>
+        <span>Position / samples</span>
+        <span>Quality</span>
+        <span>Note</span>
+      </div>
+      {records.slice(0, 12).map((record) => (
+        <div className="data-table__row" key={record.id}>
+          <span>{formatDate(record.type === "point" ? record.timestamp : record.started_at)}</span>
+          <span>{record.type}</span>
+          <span>
+            {record.type === "point" ? (
+              record.position_w_m?.length === 3 ? (
+                <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
+                  <span>{record.position_w_m.map((value) => formatCoordinate(value, units)).join(" · ")}</span>
+                  {record.image_uri ? (
+                    <Button size="sm" variant="ghost" style={{ padding: "1px 6px", fontSize: "0.7rem" }} onClick={() => onAnnotate(record)}>
+                      Annotate
+                    </Button>
+                  ) : null}
+                </div>
+              ) : (
+                <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+                  {record.image_uri ? (
+                    <img
+                      src={`/api/v1/projects/${projectId}/sessions/${sessionId}/painted-records/${record.id}/image`}
+                      alt="Capture"
+                      style={{ height: "36px", width: "48px", borderRadius: "4px", objectFit: "cover", border: "1px solid var(--line-strong)" }}
+                    />
+                  ) : null}
+                  <Button size="sm" variant="primary" onClick={() => onAnnotate(record)}>
+                    Annotate
+                  </Button>
+                </div>
+              )
+            ) : (
+              `${record.sample_count} samples`
+            )}
+          </span>
+          <span><StatusBadge state={record.quality} /></span>
+          <span>{record.note ?? "—"}</span>
+        </div>
+      ))}
+    </div>
+  );
 }
 
 function LiveImageOverlay({ active, tracking }: { active: boolean; tracking: TrackingViewFrame | null }) {

@@ -74,6 +74,7 @@ export function ProjectLayout() {
   const activeProject = useProjectStore((state) => state.activeProject);
   const setActiveProject = useProjectStore((state) => state.setActiveProject);
   const setActiveMap = useProjectStore((state) => state.setActiveMap);
+  const pushToast = useUiStore((state) => state.pushToast);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
@@ -108,7 +109,21 @@ export function ProjectLayout() {
       <header className="project-header">
         <div className="project-header__identity">
           <Link to="/projects" className="back-link">← Projects</Link>
-          <h1>{activeProject.name}</h1>
+          <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
+            <h1>{activeProject.name}</h1>
+            <Button
+              size="sm"
+              variant="ghost"
+              style={{ fontSize: "0.7rem", padding: "2px 8px", color: "var(--cyan)", border: "1px solid var(--line-strong)", borderRadius: "4px" }}
+              onClick={() => {
+                void navigator.clipboard.writeText(activeProject.id);
+                pushToast({ kind: "success", title: "Project ID copied", message: activeProject.id });
+              }}
+              title={`Copy Project ID: ${activeProject.id}`}
+            >
+              📋 Copy ID
+            </Button>
+          </div>
           <StatusBadge state={activeProject.state} />
         </div>
         <div className="project-header__metrics">

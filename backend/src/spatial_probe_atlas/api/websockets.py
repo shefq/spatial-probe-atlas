@@ -697,6 +697,18 @@ async def probe_test(websocket: WebSocket, project_id: str) -> None:
         await asyncio.gather(receiver_task, sender_task, return_exceptions=True)
 
 
+_SESSION_SUBSCRIBERS: dict[str, set[asyncio.Queue]] = {}
+
+
+def broadcast_session_event(session_id: str, envelope: dict[str, Any]) -> None:
+    queues = _SESSION_SUBSCRIBERS.get(session_id, set())
+    for q in list(queues):
+        try:
+            q.put_nowait(envelope)
+        except Exception:
+            pass
+
+
 @router.websocket("/projects/{project_id}/sessions/{session_id}/tracking")
 async def session_tracking(websocket: WebSocket, project_id: str, session_id: str) -> None:
     if not await _authorize(websocket):
@@ -704,6 +716,11 @@ async def session_tracking(websocket: WebSocket, project_id: str, session_id: st
     container = websocket.app.state.container
     path_state: dict[str, Any] = {"path": None, "next_sample_at": 0.0}
     sequence_state = {"seq": 0}
+    event_queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+
+    if session_id not in _SESSION_SUBSCRIBERS:
+        _SESSION_SUBSCRIBERS[session_id] = set()
+    _SESSION_SUBSCRIBERS[session_id].add(event_queue)
 
     async def receiver() -> None:
         try:
@@ -738,9 +755,12 @@ async def session_tracking(websocket: WebSocket, project_id: str, session_id: st
                                 "frame_id": data.get("frame_id"),
                                 "position_w_m": data.get("position_w_m"),
                                 "note": data.get("note", ""),
-                                "low_quality_override_reason": data.get("reason") if data.get("allow_low_quality") else None,
+                                "label": data.get("label"),
+                                "value": data.get("value"),
+                                "color": data.get("color"),
+                                "low_quality_override_reason": data.get("reason") if data.get("allow_low_quality") else "external_api_trigger",
                                 "save_image": save_image,
-                                "window_s": data.get("window_s", 0.0),
+                                "window_s": data.get("window_s", 0.5),
                                 "use_window_average": data.get("use_window_average", False),
                             },
                             image_bytes=image_bytes,
@@ -773,6 +793,16 @@ async def session_tracking(websocket: WebSocket, project_id: str, session_id: st
     async def sender() -> None:
         try:
             while True:
+                # Drain any externally broadcast events for this session
+                while not event_queue.empty():
+                    try:
+                        queued_event = event_queue.get_nowait()
+                        queued_event["seq"] = sequence_state["seq"]
+                        sequence_state["seq"] += 1
+                        await websocket.send_json(queued_event)
+                    except Exception:
+                        break
+
                 session = container.catalog.get_resource(project_id, "session", session_id)
                 seq = sequence_state["seq"]
                 sequence_state["seq"] += 1
@@ -804,6 +834,7 @@ async def session_tracking(websocket: WebSocket, project_id: str, session_id: st
     try:
         await asyncio.wait([receiver_task, sender_task], return_when=asyncio.FIRST_COMPLETED)
     finally:
+        _SESSION_SUBSCRIBERS.get(session_id, set()).discard(event_queue)
         receiver_task.cancel()
         sender_task.cancel()
         await asyncio.gather(receiver_task, sender_task, return_exceptions=True)

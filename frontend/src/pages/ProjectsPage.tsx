@@ -143,7 +143,15 @@ export function ProjectsPage() {
                   <span className={project.readiness?.registration_ready ? "is-ready" : ""}>Metric</span>
                 </div>
                 <div className="project-card__stats"><span><small>Map points</small>{formatCount(project.map_point_count)}</span><span><small>Sessions</small>{project.session_count ?? 0}</span><span><small>Size</small>{formatBytes(project.size_bytes)}</span></div>
-                <div className="button-row"><Button variant="primary" size="sm" onClick={(event) => { event.stopPropagation(); navigate(`/projects/${project.id}/${project.readiness?.map_ready ? "registration" : "camera"}`); }}>{project.state === "archived" ? "Inspect" : "Open project"}</Button><Button size="sm" onClick={(event) => { event.stopPropagation(); void selectProject(project); }}>Details</Button></div>
+                <div className="button-row">
+                  <Button variant="primary" size="sm" onClick={(event) => { event.stopPropagation(); navigate(`/projects/${project.id}/${project.readiness?.map_ready ? "registration" : "camera"}`); }}>{project.state === "archived" ? "Inspect" : "Open project"}</Button>
+                  <Button size="sm" onClick={(event) => { event.stopPropagation(); void selectProject(project); }}>Details</Button>
+                  <Button size="sm" variant="ghost" title={`Copy Project ID: ${project.id}`} onClick={(event) => {
+                    event.stopPropagation();
+                    void navigator.clipboard.writeText(project.id);
+                    pushToast({ kind: "success", title: "Project ID copied", message: project.id });
+                  }}>📋 Copy ID</Button>
+                </div>
               </article>
             ))}
           </div>
@@ -193,7 +201,20 @@ function ProjectDrawer({ project, onClose, onChanged }: { project: ProjectSummar
   return (
     <div className="drawer-backdrop" onMouseDown={(event) => { if (event.currentTarget === event.target) onClose(); }}>
       <aside className="drawer" aria-label={`${project.name} details`}>
-        <header><div><div className="eyebrow">PROJECT DETAILS</div><h2>{project.name}</h2></div><Button variant="ghost" onClick={onClose} aria-label="Close details">×</Button></header>
+        <header>
+          <div>
+            <div className="eyebrow">PROJECT DETAILS</div>
+            <h2>{project.name}</h2>
+            <div style={{ display: "flex", alignItems: "center", gap: "6px", marginTop: "4px" }}>
+              <code style={{ fontSize: "0.7rem", color: "var(--cyan)", background: "rgba(46, 146, 174, 0.15)", padding: "2px 6px", borderRadius: "4px" }}>{project.id}</code>
+              <Button size="sm" variant="ghost" style={{ padding: "1px 6px", fontSize: "0.68rem" }} onClick={() => {
+                void navigator.clipboard.writeText(project.id);
+                pushToast({ kind: "success", title: "Project ID copied", message: project.id });
+              }}>Copy</Button>
+            </div>
+          </div>
+          <Button variant="ghost" onClick={onClose} aria-label="Close details">×</Button>
+        </header>
         <div className="drawer__content">
           <div className="metric-grid"><Metric label="Size" value={formatBytes(project.size_bytes)} /><Metric label="Frames" value={formatCount(project.capture_frame_count)} /><Metric label="Map points" value={formatCount(project.map_point_count)} /><Metric label="Sessions" value={project.session_count ?? 0} /></div>
           <section><h3>Sessions</h3>{project.sessions?.length ? <div className="drawer-list">{project.sessions.map((session) => <button key={session.id} onClick={() => navigate(`/projects/${project.id}/sessions/${session.id}/review`)}><span><strong>{session.name}</strong><small>{formatDate(session.created_at)}</small></span><span>{formatDuration(session.duration_seconds)} →</span></button>)}</div> : <p className="muted">No sessions yet.</p>}</section>

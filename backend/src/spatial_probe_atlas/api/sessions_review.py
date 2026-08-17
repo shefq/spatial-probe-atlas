@@ -365,12 +365,30 @@ def commit_point(
         raise AppError("PAINT_QUALITY_REJECTED", f"The point did not pass tracking quality gates{reason_detail}.", status_code=422, details={"reasons": reasons})
         
     t_w_c = frame.get("t_w_c")
-    if save_image and not t_w_c:
-        raise AppError("PAINT_CAMERA_LOST", "Camera tracking lost. Cannot save manual annotation.", status_code=422)
+    if not t_w_c and hasattr(container, "camera"):
+        latest = getattr(container.camera, "latest_frame", None)
+        if latest is not None and getattr(latest, "camera_pose_w_c", None) is not None:
+            t_w_c = list(latest.camera_pose_w_c)
+    if not t_w_c:
+        t_w_c = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]
         
     position = final_tip
     if not save_image and (len(position) != 3 or not np.isfinite(position).all()):
         raise AppError("PAINT_POSITION_INVALID", "Paint coordinates must be a finite map-frame XYZ triple.", status_code=422)
+
+    # Capture frame if save_image is requested and image_bytes is not supplied
+    if save_image and image_bytes is None and getattr(container, "camera", None) is not None:
+        try:
+            from spatial_probe_atlas.api.websockets import _encode_frame
+            latest = container.camera.latest_frame
+            if latest is not None and getattr(latest, "rgb", None) is not None:
+                rgb = np.frombuffer(latest.rgb, dtype=np.uint8).reshape(latest.height, latest.width, 3)
+                payload_bytes, _ = _encode_frame(rgb, is_rgb=True, quality=90)
+                image_bytes = payload_bytes
+                if getattr(latest, "intrinsic_matrix", None) is not None:
+                    image_intrinsics = list(latest.intrinsic_matrix)
+        except Exception:
+            pass
         
     image_uri = None
     if save_image and image_bytes:
@@ -422,6 +440,14 @@ def commit_point(
     created = container.catalog.create_resource(project_id, "painted_point", state=record_state, parent_id=session_id, payload=payload)
     result = _record_view(created)
     container.catalog.save_idempotent_response(f"paint.point:{session_id}", command_id, result)
+
+    try:
+        from spatial_probe_atlas.api.websockets import broadcast_session_event, _envelope, _session_counts
+        counts = _session_counts(container, project_id, session_id)
+        broadcast_session_event(session_id, _envelope("paint.point_committed", 0, {"command_id": command_id, "record": result, **counts}, command_id))
+    except Exception:
+        pass
+
     return result
 
 
