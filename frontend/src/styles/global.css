@@ -212,8 +212,34 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 
 .workflow-grid { display: grid; min-width: 0; gap: .9rem; }
 .workflow-grid--camera { grid-template-columns: minmax(0, 1.75fr) minmax(340px, .8fr); }
-.workflow-grid--mapping, .workflow-grid--registration { grid-template-columns: minmax(0, 1fr) 350px; }
+.workflow-grid--mapping, .workflow-grid--registration { grid-template-columns: minmax(0, 1fr) 350px; align-items: start; }
 .workflow-sidebar { min-width: 0; }
+.workflow-grid--mapping .workflow-sidebar, .workflow-grid--registration .workflow-sidebar {
+  position: sticky;
+  top: 1rem;
+  max-height: calc(100vh - 150px);
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding-right: 4px;
+}
+.workflow-grid--mapping .workflow-sidebar::-webkit-scrollbar,
+.workflow-grid--registration .workflow-sidebar::-webkit-scrollbar {
+  width: 6px;
+}
+.workflow-grid--mapping .workflow-sidebar::-webkit-scrollbar-track,
+.workflow-grid--registration .workflow-sidebar::-webkit-scrollbar-track {
+  background: rgba(10, 17, 24, 0.4);
+  border-radius: 4px;
+}
+.workflow-grid--mapping .workflow-sidebar::-webkit-scrollbar-thumb,
+.workflow-grid--registration .workflow-sidebar::-webkit-scrollbar-thumb {
+  background: #25394d;
+  border-radius: 4px;
+}
+.workflow-grid--mapping .workflow-sidebar::-webkit-scrollbar-thumb:hover,
+.workflow-grid--registration .workflow-sidebar::-webkit-scrollbar-thumb:hover {
+  background: var(--cyan);
+}
 .preview-card { padding-bottom: 0; }.preview-card .card__header { padding-bottom: .2rem; }
 .mapping-preview-card { padding-bottom: 0; }.mapping-preview-card .card__header { padding-bottom: .2rem; }
 .mapping-preview { position: relative; overflow: hidden; margin: 0 -1rem; border-radius: 0 0 var(--radius) var(--radius); background: radial-gradient(circle at center, #142534, #070a0e 65%); }

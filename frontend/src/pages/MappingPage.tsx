@@ -182,8 +182,26 @@ export function MappingPage() {
       </div>
       <div className="workflow-grid workflow-grid--mapping">
         <div className="mapping-main">
-          <Card className="viewer-card" title="Spatial map inspection" eyebrow={selectedMap ? `${selectedMap.name} · ${selectedMap.state}` : "NO MAP SELECTED"} actions={selectedMap ? <><Segmented label="View mode" value={viewMode} options={[{ value: "points", label: "Points" }, { value: "mesh", label: "Mesh" }]} onChange={(v) => setViewMode(v as "points" | "mesh")} /><select className="select select--compact" value={selectedMapId} onChange={(event) => setSelectedMapId(event.target.value)}>{maps.map((map) => <option key={map.id} value={map.id}>{map.name}{map.active ? " · active" : ""}</option>)}</select>{!selectedMap.active && selectedMap.state.startsWith("ready") ? <Button size="sm" busy={busy} onClick={() => void activateMap(selectedMap)}>Activate</Button> : null}</> : null}>
-            {selectedMap ? <SpatialViewer ref={viewerRef} mode="mapping" projectId={projectId} mapId={selectedMap.id} onMetrics={setViewerMetrics} filters={{ showMap: true, showFrames: true, showBoard: true, showMarkers: true }} /> : <div className="viewer-empty"><EmptyState icon="⌖" title="Your point cloud will appear here">Capture at least 7 accepted frames, then build the CPU or CUDA reconstruction.</EmptyState></div>}
+          <Card className="viewer-card registration-workspace-card" title="Spatial map inspection" eyebrow={selectedMap ? `${selectedMap.name} · ${selectedMap.state}` : "NO MAP SELECTED"} actions={selectedMap ? <><Segmented label="View mode" value={viewMode} options={[{ value: "points", label: "Points" }, { value: "mesh", label: "Mesh" }]} onChange={(v) => setViewMode(v as "points" | "mesh")} /><select className="select select--compact" value={selectedMapId} onChange={(event) => setSelectedMapId(event.target.value)}>{maps.map((map) => <option key={map.id} value={map.id}>{map.name}{map.active ? " · active" : ""}</option>)}</select>{!selectedMap.active && selectedMap.state.startsWith("ready") ? <Button size="sm" busy={busy} onClick={() => void activateMap(selectedMap)}>Activate</Button> : null}</> : null}>
+            <div className="registration-workspace-layout">
+              <div className="registration-viewer-wrap">
+                {selectedMap ? <SpatialViewer ref={viewerRef} mode="mapping" projectId={projectId} mapId={selectedMap.id} onMetrics={setViewerMetrics} filters={{ showMap: true, showFrames: true, showBoard: true, showMarkers: true }} /> : <div className="viewer-empty"><EmptyState icon="⌖" title="Your point cloud will appear here">Capture at least 7 accepted frames, then build the CPU or CUDA reconstruction.</EmptyState></div>}
+              </div>
+              <div className="registration-record3d-widget">
+                <div className="record3d-widget-header">
+                  <div>
+                    <div className="eyebrow">LIVE RECORD3D</div>
+                    <strong>Live RGB preview</strong>
+                  </div>
+                  <StatusBadge state={cameraStatus.state === "ready" ? "open" : cameraStatus.state} />
+                </div>
+                <div className="tracking-feed-preview" style={{ marginBottom: 0 }}>
+                  <div>
+                    <MappingCameraPreview active={cameraStatus.state !== "disconnected" && cameraStatus.state !== "error"} />
+                  </div>
+                </div>
+              </div>
+            </div>
             <div className="viewer-metrics"><span>Map {formatCount(selectedMap?.point_count)} pts</span><span>Visible {formatCount(viewerMetrics?.visiblePoints)} pts</span><span>Tiles {viewerMetrics?.loadedTiles ?? 0}</span><span>{viewerMetrics?.frameTimeMs.toFixed(1) ?? "—"} ms</span></div>
           </Card>
           <Card title="Frame browser" eyebrow="INCREMENTAL QUALITY" actions={<span className="muted">Click frame to toggle · Click × to delete</span>}>
@@ -191,15 +209,6 @@ export function MappingPage() {
           </Card>
         </div>
         <aside className="workflow-sidebar">
-          {showCameraPreview ? (
-            <Card className="mapping-preview-card" title="Live RGB preview" eyebrow="SIDE FEED" actions={<Button size="sm" onClick={() => setShowCameraPreview(false)}>Hide</Button>}>
-              <MappingCameraPreview active={cameraStatus.state !== "disconnected" && cameraStatus.state !== "error"} />
-            </Card>
-          ) : (
-            <Card className="mapping-preview-card mapping-preview-card--collapsed" title="Live RGB preview" eyebrow="SIDE FEED" actions={<Button size="sm" onClick={() => setShowCameraPreview(true)}>Show</Button>}>
-              <p className="muted">The live camera feed is hidden. Show it again when you want a quick visual check.</p>
-            </Card>
-          )}
           <Card title="Capture quality" eyebrow="ADMISSION">
             <div className="metric-grid"><Metric label="Captured" value={formatCount(selectedSet?.frame_count)} /><Metric label="Accepted" value={formatCount(acceptedFrames)} tone={acceptedFrames >= 7 ? "good" : "warning"} /><Metric label="Excluded" value={formatCount(selectedSet?.excluded_frame_count)} /><Metric label="Coverage" value={selectedSet?.coverage == null ? "—" : `${(selectedSet.coverage * 100).toFixed(0)}%`} /></div>
             {acceptedFrames < 7 ? <InlineAlert tone="warning" title={`${7 - acceptedFrames} more accepted frames required`}>Map creation requires at least 7; 15 or more with varied viewpoints is recommended.</InlineAlert> : acceptedFrames < 15 ? <InlineAlert tone="warning" title="Usable but lightly covered">You can build now; another {15 - acceptedFrames} varied frames are recommended.</InlineAlert> : <InlineAlert tone="success" title="Frame count ready">Review blur, exposure and coverage before reconstruction.</InlineAlert>}
@@ -339,8 +348,40 @@ function MappingCameraPreview({ active }: { active: boolean }) {
     };
   }, [active]);
 
-  if (!active) return <div className="mapping-preview"><div className="camera-placeholder camera-placeholder--compact"><span>▣</span><strong>Preview starts after camera connection</strong><small>Enable the camera to show the live RGB feed here.</small></div></div>;
-  return <div className="mapping-preview"><div className="preview-state"><StatusBadge state={state} label={state === "open" ? "Live" : state} /></div><div className="preview-pane preview-pane--compact">{rgbUrl ? <img src={rgbUrl} alt="Live camera RGB preview" /> : <div className="preview-wait"><span className="spinner" /> Waiting for RGB frame…</div>}<span className="preview-label">RGB</span></div></div>;
+  if (!active) {
+    return (
+      <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", height: "100%", color: "var(--muted)", fontSize: "0.75rem", padding: "1rem", textAlign: "center" }}>
+        <span style={{ fontSize: "1.5rem", marginBottom: "0.4rem", color: "var(--cyan)" }}>▣</span>
+        <strong>Camera disconnected</strong>
+        <small style={{ marginTop: "0.2rem" }}>Connect Record3D to view live preview</small>
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ width: "100%", height: "100%", display: "flex", alignItems: "center", justifyContent: "center", background: "#05080b" }}>
+      {rgbUrl ? (
+        <img
+          src={rgbUrl}
+          alt="Live camera RGB preview"
+          style={{ width: "100%", height: "100%", objectFit: "contain", display: "block" }}
+          onLoad={(e) => {
+            const img = e.currentTarget;
+            if (img.naturalWidth && img.naturalHeight) {
+              const previewBox = img.closest<HTMLElement>(".tracking-feed-preview");
+              if (previewBox) {
+                previewBox.style.setProperty("aspect-ratio", `${img.naturalWidth} / ${img.naturalHeight}`);
+              }
+            }
+          }}
+        />
+      ) : (
+        <span style={{ display: "flex", alignItems: "center", gap: "6px", color: "var(--muted)", fontSize: "0.75rem" }}>
+          <span className="spinner" /> Waiting for RGB frame…
+        </span>
+      )}
+    </div>
+  );
 }
 
 function JobCard({ job, onRefresh }: { job: JobSnapshot; onRefresh: () => void }) {

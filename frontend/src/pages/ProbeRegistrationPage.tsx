@@ -389,7 +389,10 @@ export function ProbeRegistrationPage() {
                         onLoad={(e) => {
                           const img = e.currentTarget;
                           if (img.naturalWidth && img.naturalHeight) {
-                            img.parentElement?.parentElement?.style.setProperty("aspect-ratio", `${img.naturalWidth} / ${img.naturalHeight}`);
+                            const previewBox = img.closest<HTMLElement>(".tracking-feed-preview");
+                            if (previewBox) {
+                              previewBox.style.setProperty("aspect-ratio", `${img.naturalWidth} / ${img.naturalHeight}`);
+                            }
                           }
                         }}
                       />
@@ -426,41 +429,7 @@ export function ProbeRegistrationPage() {
               </div>
             </div>
           </Card>
-          {workflowMode === "aruco_joint" ? (
-            <Card title="ArUco Joint Calibration Steps" eyebrow="BOARD & PROBE SETUP">
-              <ol className="registration-stepper">
-                <RegistrationStep 
-                  index={1} 
-                  title="Configure ArUco Markers" 
-                  state={(capture?.accepted_frame_count ?? 0) > 0 ? "complete" : "active"} 
-                  detail="Enter the IDs of the markers on your board. The middle ID will be the anchor (default 7)." 
-                  action={
-                    <Field label="Marker IDs (comma separated)">
-                      <TextInput value={arucoIdsStr} onChange={(e) => setArucoIdsStr(e.target.value)} />
-                    </Field>
-                  } 
-                />
-                <RegistrationStep 
-                  index={2} 
-                  title="Capture Joint Views" 
-                  state={(capture?.accepted_frame_count ?? 0) >= 3 ? "complete" : "active"} 
-                  detail={`${capture?.accepted_frame_count ?? 0}/3 accepted views. Place probe on the board so both are visible.`} 
-                  action={<Button size="sm" variant="primary" busy={busy} disabled={!cameraReady} onClick={() => void captureArucoFrame()}>Capture joint view</Button>} 
-                />
-                <RegistrationStep 
-                  index={3} 
-                  title="Solve & Activate" 
-                  state={selectedRegistration?.active && (selectedRegistration as any)?.is_aruco_mode ? "complete" : (capture?.accepted_frame_count ?? 0) >= 3 ? "active" : "pending"} 
-                  detail="Solves probe geometry, board layout, and creates active registration." 
-                  action={
-                    <div className="button-row">
-                      {(capture?.accepted_frame_count ?? 0) >= 3 ? <Button size="sm" variant="primary" busy={busy} onClick={() => void solveArucoCalibration()}>Solve & Activate</Button> : null}
-                    </div>
-                  } 
-                />
-              </ol>
-            </Card>
-          ) : (
+          {workflowMode !== "aruco_joint" ? (
             <Card
               title="Registration steps"
               eyebrow="BOARD / TISSUE TO MAP"
@@ -509,14 +478,48 @@ export function ProbeRegistrationPage() {
                 <RegistrationStep index={5} title="Activate metric registration" state={selectedRegistration?.active ? "complete" : registrationStep >= 4 ? "active" : "pending"} detail="Activation enables Live while preserving prior immutable revisions." action={registrationStep >= 4 && !selectedRegistration?.active ? <Button size="sm" variant="primary" busy={busy} onClick={() => void registrationAction("activate")}>Activate</Button> : null} />
               </ol>
             </Card>
-          )}
+          ) : null}
         </div>
         <aside className="workflow-sidebar">
           <Card title="Calibration library" eyebrow="REUSABLE JSON" actions={<div className="button-row"><Button size="sm" onClick={() => navigate("/probe-designer")} title="Open Probe Designer & Blender Generator">📐 CAD Designer</Button><label className="button button--default button--sm file-button">Upload<input type="file" accept=".json,application/json" onChange={(event) => { const file = event.target.files?.[0]; if (file) void validateImport(file); event.target.value = ""; }} /></label></div>}>
             {calibrations.length ? <div className="calibration-list">{calibrations.map((calibration) => <button className={selectedCalibrationId === calibration.id ? "is-selected" : ""} key={calibration.id} onClick={() => setSelectedCalibrationId(calibration.id)}><span><strong>{calibration.name}</strong><small>r{calibration.revision} · {formatDate(calibration.created_at)} · {calibration.quality.rms_reprojection_error_px.toFixed(2)} px</small></span><StatusBadge state={calibration.active ? "active" : calibration.state} /></button>)}</div> : <p className="muted">Create from images or upload a complete versioned probe_calibration.json.</p>}
             {selectedCalibration ? <div className="button-row"><Button size="sm" onClick={() => api.probe.download(projectId, selectedCalibration.id)}>Download JSON</Button><Button size="sm" onClick={() => setTipModalOpen(true)}>🎯 Adjust Tip</Button>{!selectedCalibration.active ? <Button size="sm" variant="primary" busy={busy} onClick={() => void activateCalibration(selectedCalibration)}>Activate</Button> : null}</div> : null}
           </Card>
-          {workflowMode !== "aruco_joint" ? (
+          {workflowMode === "aruco_joint" ? (
+            <Card title="ArUco Joint Calibration Steps" eyebrow="BOARD & PROBE SETUP">
+              <ol className="registration-stepper">
+                <RegistrationStep 
+                  index={1} 
+                  title="Configure ArUco Markers" 
+                  state={(capture?.accepted_frame_count ?? 0) > 0 ? "complete" : "active"} 
+                  detail="Enter the IDs of the markers on your board. The middle ID will be the anchor (default 7)." 
+                  action={
+                    <Field label="Marker IDs (comma separated)">
+                      <TextInput value={arucoIdsStr} onChange={(e) => setArucoIdsStr(e.target.value)} />
+                    </Field>
+                  } 
+                />
+                <RegistrationStep 
+                  index={2} 
+                  title="Capture Joint Views" 
+                  state={(capture?.accepted_frame_count ?? 0) >= 3 ? "complete" : "active"} 
+                  detail={`${capture?.accepted_frame_count ?? 0}/3 accepted views. Place probe on the board so both are visible.`} 
+                  action={<Button size="sm" variant="primary" busy={busy} disabled={!cameraReady} onClick={() => void captureArucoFrame()}>Capture joint view</Button>} 
+                />
+                <RegistrationStep 
+                  index={3} 
+                  title="Solve & Activate" 
+                  state={selectedRegistration?.active && (selectedRegistration as any)?.is_aruco_mode ? "complete" : (capture?.accepted_frame_count ?? 0) >= 3 ? "active" : "pending"} 
+                  detail="Solves probe geometry, board layout, and creates active registration." 
+                  action={
+                    <div className="button-row">
+                      {(capture?.accepted_frame_count ?? 0) >= 3 ? <Button size="sm" variant="primary" busy={busy} onClick={() => void solveArucoCalibration()}>Solve & Activate</Button> : null}
+                    </div>
+                  } 
+                />
+              </ol>
+            </Card>
+          ) : (
             <Card title="Create probe calibration" eyebrow="3 MIN · 15–25 RECOMMENDED">
               <Field label="Calibration name"><TextInput value={calibrationName} onChange={(event) => setCalibrationName(event.target.value)} /></Field>
               <div className="capture-progress"><div><strong>{capture?.accepted_frame_count ?? 0}</strong><span>accepted ({(capture?.input_frame_count ?? capture?.frame_count ?? 0)} total)</span></div><ProgressBar value={Math.min(1, (capture?.accepted_frame_count ?? 0) / 15)} /></div>
@@ -527,7 +530,7 @@ export function ProbeRegistrationPage() {
                 </small>
               ) : null}
             </Card>
-          ) : null}
+          )}
         </aside>
       </div>
       {selectedCalibration ? (
