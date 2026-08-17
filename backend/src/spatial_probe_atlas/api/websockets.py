@@ -307,7 +307,19 @@ def _probe_metrics(
     }
 
 
-async def _send_probe_images(websocket: WebSocket, frame: Any, sequence: int, metrics: dict[str, Any] | None = None, settings: dict[str, Any] | None = None) -> int:
+async def _send_probe_images(
+    target: Any,
+    frame: Any,
+    sequence: int,
+    metrics: dict[str, Any] | None = None,
+    settings: dict[str, Any] | None = None,
+) -> int:
+    if callable(target):
+        send_fn = target
+    else:
+        async def send_fn(header: dict[str, Any], payload: bytes) -> None:
+            await _send_binary(target, header, payload)
+
     image = np.frombuffer(frame.rgb, dtype=np.uint8).reshape(frame.height, frame.width, 3)
     overlay = image.copy()
     keypoints = (metrics or {}).get("keypoints", [])
@@ -358,20 +370,71 @@ async def _send_probe_images(websocket: WebSocket, frame: Any, sequence: int, me
         except Exception as e:
             print(f"[Probe Tuning Overlay Error] {e}")
 
-    payload, fmt = _encode_frame(overlay, is_rgb=True, quality=80)
-    await _send_binary(
-        websocket,
+    # 1. Send Raw Image (Raw Record3D)
+    raw_payload, raw_fmt = _encode_frame(image, is_rgb=True, quality=75)
+    await send_fn(
+        {
+            "protocol_version": 1,
+            "type": "probe.diagnostic_image",
+            "seq": sequence,
+            "timestamp": datetime.now(UTC).isoformat(),
+            "kind": "raw",
+            "encoding": raw_fmt,
+            "width": frame.width,
+            "height": frame.height,
+        },
+        raw_payload,
+    )
+    sequence += 1
+
+    # 2. Send Binary / Thresholded Image (Threshold / binary)
+    if cv2 is not None:
+        try:
+            gray = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
+            min_t = float((settings or {}).get("minThreshold", 50))
+            max_t = float((settings or {}).get("maxThreshold", 220))
+            thresh_val = int((min_t + max_t) / 2.0)
+            thresh_type = cv2.THRESH_BINARY
+            if (settings or {}).get("filterByColor") and (settings or {}).get("blobColor") == 0:
+                thresh_type = cv2.THRESH_BINARY_INV
+            _, binary_img = cv2.threshold(gray, thresh_val, 255, thresh_type)
+        except Exception:
+            gray = image.mean(axis=2).astype(np.uint8)
+            binary_img = ((gray > 128) * 255).astype(np.uint8)
+    else:
+        gray = image.mean(axis=2).astype(np.uint8)
+        binary_img = ((gray > 128) * 255).astype(np.uint8)
+
+    bin_payload, bin_fmt = _encode_frame(binary_img, is_rgb=False, quality=75)
+    await send_fn(
+        {
+            "protocol_version": 1,
+            "type": "probe.diagnostic_image",
+            "seq": sequence,
+            "timestamp": datetime.now(UTC).isoformat(),
+            "kind": "binary",
+            "encoding": bin_fmt,
+            "width": frame.width,
+            "height": frame.height,
+        },
+        bin_payload,
+    )
+    sequence += 1
+
+    # 3. Send Detected Overlay Image (Detected overlay)
+    overlay_payload, overlay_fmt = _encode_frame(overlay, is_rgb=True, quality=80)
+    await send_fn(
         {
             "protocol_version": 1,
             "type": "probe.diagnostic_image",
             "seq": sequence,
             "timestamp": datetime.now(UTC).isoformat(),
             "kind": "overlay",
-            "encoding": fmt,
+            "encoding": overlay_fmt,
             "width": frame.width,
             "height": frame.height,
         },
-        payload,
+        overlay_payload,
     )
     sequence += 1
     return sequence
@@ -413,6 +476,23 @@ async def probe_tuning(websocket: WebSocket, project_id: str) -> None:
         "tip_offset": init_tip_offset,
     }
 
+    send_lock = asyncio.Lock()
+
+    async def safe_send_json(payload: dict[str, Any]) -> None:
+        async with send_lock:
+            try:
+                await websocket.send_json(payload)
+            except Exception:
+                pass
+
+    async def safe_send_binary(header: dict[str, Any], payload: bytes) -> None:
+        async with send_lock:
+            try:
+                header_bytes = json.dumps(header, separators=(",", ":")).encode("utf-8")
+                await websocket.send_bytes(struct.pack("<I", len(header_bytes)) + header_bytes + payload)
+            except Exception:
+                pass
+
     async def receiver() -> None:
         sequence = 0
         try:
@@ -445,11 +525,13 @@ async def probe_tuning(websocket: WebSocket, project_id: str) -> None:
                     if draft:
                         errors = validate_blob_detector(draft)
                         if errors:
-                            await websocket.send_json(_envelope("error", sequence, {"code": "BLOB_SETTINGS_INVALID", "message": "Draft settings are invalid.", "details": {"field_errors": errors}}))
+                            await safe_send_json(_envelope("error", sequence, {"code": "BLOB_SETTINGS_INVALID", "message": "Draft settings are invalid.", "details": {"field_errors": errors}}))
                             sequence += 1
                             continue
                         state["settings"] = dict(draft)
-        except (WebSocketDisconnect, asyncio.CancelledError, Exception):
+        except (WebSocketDisconnect, asyncio.CancelledError):
+            pass
+        except Exception:
             pass
 
     async def sender() -> None:
@@ -464,20 +546,23 @@ async def probe_tuning(websocket: WebSocket, project_id: str) -> None:
                     
                 previous = latest.sequence
                 metrics = _probe_metrics(container, state["settings"], state["marker_points_m"], state["marker_ids"], state["tip_offset"])
-                await websocket.send_json(_envelope("probe.tuning_result", sequence, metrics))
+                await safe_send_json(_envelope("probe.tuning_result", sequence, metrics))
                 sequence += 1
-                sequence = await _send_probe_images(websocket, latest, sequence, metrics, state["settings"])
-        except (WebSocketDisconnect, asyncio.CancelledError, Exception):
+                sequence = await _send_probe_images(safe_send_binary, latest, sequence, metrics, state["settings"])
+        except (WebSocketDisconnect, asyncio.CancelledError):
+            pass
+        except Exception:
             pass
 
     receiver_task = asyncio.create_task(receiver())
     sender_task = asyncio.create_task(sender())
     try:
-        await asyncio.wait([receiver_task, sender_task], return_when=asyncio.FIRST_COMPLETED)
-    finally:
-        receiver_task.cancel()
-        sender_task.cancel()
-        await asyncio.gather(receiver_task, sender_task, return_exceptions=True)
+        done, pending = await asyncio.wait([receiver_task, sender_task], return_when=asyncio.FIRST_COMPLETED)
+        for task in pending:
+            task.cancel()
+        await asyncio.gather(*pending, return_exceptions=True)
+    except Exception:
+        pass
 
 
 @router.websocket("/projects/{project_id}/registrations/{registration_id}/tracking")

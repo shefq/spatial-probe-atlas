@@ -69,6 +69,7 @@ export function ProbeTipAdjustmentModal({ open, projectId, calibration, onSaved,
         }
       },
       onBinary: (message: BinaryStreamMessage) => {
+        if (message.header?.kind && message.header.kind !== "overlay") return;
         const encoding = String(message.header?.encoding ?? "jpeg");
         const mime = encoding.includes("png") ? "image/png" : "image/jpeg";
         const url = URL.createObjectURL(new Blob([message.payload], { type: mime }));

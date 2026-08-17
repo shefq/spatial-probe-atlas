@@ -106,6 +106,7 @@ export function ProbeRegistrationPage() {
     }
     const stream = new ReconnectingSocket(`/ws/v1/projects/${projectId}/probe-tuning`, {
       onBinary: (message) => {
+        if (message.header?.kind && message.header.kind !== "overlay") return;
         const encoding = String(message.header?.encoding ?? "jpeg");
         const mime = encoding.includes("png") ? "image/png" : "image/jpeg";
         const url = URL.createObjectURL(new Blob([message.payload], { type: mime }));
