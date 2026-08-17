@@ -261,7 +261,7 @@ The engine is the single owner of:
 
 - Scene, renderer, render camera, controls, clock, render loop, adaptive pixel ratio, and context recovery.
 - Point-cloud tiling, worker decoding, GPU buffer pool, LOD, frustum culling, materials, colour modes, and picking acceleration.
-- Probe model, tip glyph, camera frustum, coordinate frames, board/tissue frame, registration residuals, overlays, painted points, and paths.
+- Probe model, tip glyph, camera frustum, coordinate frames, board/tissue frame, registration residuals, overlays, painted points, paths, and reconstructed ArUco markers from the map.
 - 3D transform graph, raycasting, selection, nearest-point queries, and interaction controllers.
 - Geometries, materials, textures, workers, animation frames, controls, listeners, abort controllers, and deterministic disposal.
 
@@ -289,7 +289,7 @@ Only `ViewerEngine` mutates Three.js transforms or GPU buffers. The viewer suppo
 
 ### 6.8 Page specifications
 
-Every project page has a persistent project/session header, Record3D status, active compute mode, processing state, project size, and warnings. Logs are secondary and collapsed by default.
+Every project page has a persistent project/session header, Record3D status, active compute mode, processing state, project size, and warnings. Logs are secondary and collapsed by default. Mapping and Registration pages feature sticky, independently scrollable workflow sidebars to accommodate dense workflows.
 
 #### 6.8.1 Projects & Sessions
 
@@ -318,7 +318,7 @@ Record3D always displays **Intrinsics supplied per frame** and never a calibrati
 #### 6.8.3 Scene Capture & Mapping
 
 - **Purpose:** Acquire a quality frame set and publish a point-cloud reference map.
-- **Layout:** `SpatialViewer(mode="mapping")`; live capture strip; coverage/blur indicators; frame-set and reconstruction side panel; durable progress; collapsible frame browser/logs.
+- **Layout:** `SpatialViewer(mode="mapping")`; main workspace card containing live capture strip, live RGB preview (with dynamic aspect ratio), coverage/blur indicators, and reconstruction OpenMVS progress stepper; sticky and independently scrollable side panel for frame-set and map activation; collapsible frame browser/logs.
 - **Primary actions:** Manual/interval/motion capture, import, exclude/restore/delete frames, create/cancel/resume reconstruction, inspect, apply a user transform, align to an observed ArUco board, and activate a map.
 - **States:** Incremental thumbnails and tiles; empty choice between Record3D capture and import; failures retain successful stage artifacts and old active map, with retry/restart/diagnostic actions.
 - **Validation:** Default minimum 20 accepted frames and warning below 30; reject corrupt/duplicate images; require matching per-frame intrinsics; warn on blur, exposure, weak coverage/baseline, disk reserve, and CPU time.
@@ -329,8 +329,8 @@ Record3D always displays **Intrinsics supplied per frame** and never a calibrati
 #### 6.8.4 Probe & Registration
 
 - **Purpose:** Establish reusable probe geometry/detection settings and metric map/board/probe/tip relationships.
-- **Layout:** Workflow selector for **Standard Map Mode** or **ArUco Board Mode**; status cards for active calibration, `5/5 tracked`, calibration error, registration RMS/max residual and scale; live test; calibration capture/upload; `SpatialViewer(mode="registration")`; registration stepper; prominent **Can’t track the probe?** button.
-- **Primary actions:** Test tracking, capture/upload images, create calibration, validate/import/activate/download `probe_calibration.json`, tune blobs, register board/tissue, capture joint probe/board observations, solve and activate a joint calibration, align an active map to ArUco, or solve/validate/activate the standard correspondence registration.
+- **Layout:** Workflow selector for **Standard Map Mode** or **ArUco Board Mode**; status cards for active calibration, `5/5 tracked`, calibration error, registration RMS/max residual and scale; live test (with dynamic aspect ratio); calibration capture/upload; `SpatialViewer(mode="registration")`; registration stepper; prominent **Can’t track the probe?** button. The workflow sidebar is sticky and independently scrollable, with the reusable JSON calibration library placed prominently above mode-specific steps.
+- **Primary actions:** Test tracking, capture/upload images, create calibration, interactively adjust the probe tip transform, validate/import/activate/download `probe_calibration.json`, tune blobs, register board/tissue, capture joint probe/board observations, solve and activate a joint calibration, align an active map to ArUco, or solve/validate/activate the standard correspondence registration.
 - **States:** Independent map/camera/calibration loading; empty create-or-import choice; failures preserve saved settings, staged import, and correspondences while explaining high residual, degenerate geometry, or scale mismatch.
 - **Validation:** Imported files must pass structural, semantic, unit, transform, five-point geometry, and detector-range checks before replacement. Calibration needs at least 3 valid views and recommends 15–25. Registration requires non-degenerate observations, positive scale, recorded validation, and acceptable residuals or explicit warning acceptance.
 - **Data:** Calibration identity/version/provenance, marker positions, tip transform, all detector settings, source frames/error, blob/inlier counts, probe error, board detections, scale, RMS/max residual, validation observations.
@@ -344,6 +344,12 @@ Record3D always displays **Intrinsics supplied per frame** and never a calibrati
 - Changes are an ephemeral draft applied live through the tuning WebSocket. Disabled filter groups remain visible with dependent inputs disabled.
 - **Reset to defaults** and **Import settings** alter only the draft. **Save to current project** creates and atomically activates a calibration revision containing geometry and settings. **Download settings** downloads the complete calibration JSON.
 - Cancel, Escape, backdrop click, or close never save. If dirty, offer **Discard**, **Keep editing**, or **Save**; discard restores the active saved detector configuration.
+
+**Interactive probe-tip adjustment modal**
+
+- Shows an interactive 3D view of the probe markers with a manipulable transform control to adjust the tip's relative offset.
+- Exposes: X/Y/Z offset controls in metric units.
+- Changes are saved back to the current active probe calibration, effectively updating the geometric relationship between the marker frame and the tip frame.
 
 #### 6.8.5 Live Tissue Painting
 
@@ -428,7 +434,7 @@ Each SDK callback captures RGB, depth, K, device timestamp, and sequence as one 
 
 ### 7.5 Mapping and point-cloud pipelines
 
-All profiles ingest a frozen capture-set revision, validate frame artifacts and intrinsics, publish an authoritative binary little-endian XYZ/RGB PLY, build the shared deterministic `SPATILE1` octree hierarchy, validate every manifest URI/size/SHA-256, and atomically publish without changing the active map.
+All profiles ingest a frozen capture-set revision, validate frame artifacts and intrinsics, publish an authoritative binary little-endian XYZ/RGB PLY, build the shared deterministic `SPATILE1` octree hierarchy (optionally extracting and registering ArUco markers reconstructed directly during the SFM pipeline), validate every manifest URI/size/SHA-256, and atomically publish without changing the active map.
 
 | Effective profile | Current pipeline | Localization artifact |
 |---|---|---|
@@ -726,7 +732,7 @@ This complete portable file contains geometry, marker-to-tip transform, detector
       "required": ["application_version", "method"],
       "properties": {
         "application_version": {"type": "string"},
-        "method": {"enum": ["bundle_adjustment", "imported", "manual"]},
+        "method": {"enum": ["bundle_adjustment", "imported", "manual", "triangulation"]},
         "source_calibration_id": {"type": ["string", "null"], "format": "uuid"},
         "source_project_name": {"type": ["string", "null"], "maxLength": 120}
       }

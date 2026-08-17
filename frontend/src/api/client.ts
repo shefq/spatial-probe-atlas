@@ -104,6 +104,7 @@ export const api = {
     importLegacy: (sourceDirectory: string, projectName: string | undefined, confirmDefaultedProbeSettings: boolean) => request<JobSnapshot & { target_project_id: string }>("/legacy-imports", { method: "POST", body: JSON.stringify({ source_directory: sourceDirectory, project_name: projectName || undefined, confirm_defaulted_probe_settings: confirmDefaultedProbeSettings }) }),
     legacyImport: (jobId: string) => request<JobSnapshot & { target_project_id: string }>(`/legacy-imports/${jobId}`),
     downloadLegacyReport: (jobId: string) => downloadFromApi(`/legacy-imports/${jobId}/report`, `spatial-probe-atlas-migration-${jobId}.json`),
+    jobs: (id: string, signal?: AbortSignal) => request<{ items: JobSnapshot[]; count: number }>(`/projects/${id}/jobs`, { signal }),
   },
   camera: {
     devices: (signal?: AbortSignal) => request<CameraDevice[]>("/camera/devices", { signal }), status: (signal?: AbortSignal) => request<CameraStatus>("/camera/status", { signal }),

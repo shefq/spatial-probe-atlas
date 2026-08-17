@@ -45,7 +45,7 @@ export function MappingPage() {
   const refresh = async (signal?: AbortSignal) => {
     setLoading(true); setError(null);
     try {
-      const [setsValue, mapsValue] = await Promise.all([api.capture.sets(projectId, signal), api.maps.list(projectId, signal)]);
+      const [setsValue, mapsValue, jobsValue] = await Promise.all([api.capture.sets(projectId, signal), api.maps.list(projectId, signal), api.projects.jobs(projectId, signal)]);
       setCaptureSets(setsValue); setMaps(mapsValue);
       const setId = selectedSetId || setsValue[0]?.id || "";
       setSelectedSetId(setId);
@@ -53,6 +53,7 @@ export function MappingPage() {
       const mapId = selectedMapId || mapsValue.find((map) => map.active)?.id || mapsValue[0]?.id || "";
       setSelectedMapId(mapId);
       setActiveMap(mapsValue.find((map) => map.id === mapId) ?? null);
+      jobsValue.items.forEach(job => upsertJob(job));
     } catch (value) { if (!signal?.aborted) setError(errorMessage(value)); }
     finally { if (!signal?.aborted) setLoading(false); }
   };
@@ -300,9 +301,19 @@ function SfmBoardAlignment({ projectId, mapId, mapState, boardCalibrationId, bus
 function OpenMvsRunner({ projectId, mapId, mapState, busy, setBusy, refresh }: { projectId: string, mapId: string, mapState: string, busy: boolean, setBusy: (busy: boolean) => void, refresh: () => Promise<void> }) {
   const pushToast = useUiStore((state) => state.pushToast);
   const upsertJob = useJobStore((state) => state.upsert);
+  const jobStore = useJobStore((state) => state.jobs);
   const [binPath, setBinPath] = useState(localStorage.getItem("spa_openmvs_bin") ?? "");
   const [meshJob, setMeshJob] = useState<JobSnapshot | null>(null);
   const canRun = mapState.startsWith("ready") || mapState === "active";
+
+  useEffect(() => {
+    const jobs = Object.values(jobStore).filter((j) => j.owner_project_id === projectId && j.owner_id === mapId && j.type === "mesh");
+    const getTime = (ts?: string) => (ts ? new Date(ts).getTime() : 0);
+    const existing = jobs.sort((a, b) => getTime(b.created_at) - getTime(a.created_at))[0];
+    if (existing && (!meshJob || getTime(existing.created_at) > getTime(meshJob.created_at) || existing.state !== meshJob.state || existing.progress !== meshJob.progress || existing.message !== meshJob.message)) {
+      setMeshJob(existing);
+    }
+  }, [jobStore, projectId, mapId, meshJob]);
 
   useEffect(() => {
     if (!meshJob?.id || ["completed", "cancelled", "failed"].includes(meshJob.state)) return;
@@ -318,7 +329,7 @@ function OpenMvsRunner({ projectId, mapId, mapState, busy, setBusy, refresh }: {
           pushToast({ kind: "error", title: "OpenMVS mesh generation failed", message: updated.error?.message });
         }
       } catch {}
-    }, 1000);
+    }, 750);
     return () => window.clearInterval(timer);
   }, [meshJob?.id, meshJob?.state, refresh, upsertJob]);
 
@@ -335,7 +346,7 @@ function OpenMvsRunner({ projectId, mapId, mapState, busy, setBusy, refresh }: {
         stage: "interface_colmap",
         stage_index: 1,
         stage_count: 4,
-        progress: 0.05,
+        progress: 0.02,
         message: "Queueing OpenMVS pipeline…",
         created_at: new Date().toISOString(),
       };
@@ -373,6 +384,9 @@ function OpenMvsRunner({ projectId, mapId, mapState, busy, setBusy, refresh }: {
     { key: "reconstruct_mesh", label: "3. Mesh", index: 3 },
     { key: "texture_mesh", label: "4. Texture", index: 4 },
   ];
+
+  const etaMatch = meshJob?.message ? meshJob.message.match(/ETA\s*[:=]?\s*([0-9a-zA-Z\:\.]+)/i) : null;
+  const etaText = etaMatch ? etaMatch[1].replace(/[\),;\.]/g, "") : null;
 
   return (
     <div className="button-row" style={{ marginTop: 12, display: "flex", flexDirection: "column", gap: 10 }}>
@@ -428,13 +442,29 @@ function OpenMvsRunner({ projectId, mapId, mapState, busy, setBusy, refresh }: {
             })}
           </div>
 
-          <ProgressBar value={meshJob.state === "completed" ? 1 : Math.max(0.05, meshJob.progress ?? 0)} />
+          <ProgressBar value={meshJob.state === "completed" ? 1 : Math.max(0.02, meshJob.progress ?? 0)} />
 
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: "0.72rem", color: "var(--text-soft)" }}>
-            <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: "80%" }}>
-              {meshJob.message || (meshJob.stage ? `Processing ${meshJob.stage.replaceAll("_", " ")}…` : "Working…")}
-            </span>
-            <strong style={{ fontVariantNumeric: "tabular-nums" }}>{Math.round((meshJob.progress ?? 0) * 100)}%</strong>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "8px", fontSize: "0.75rem" }}>
+            <div style={{ display: "flex", flexDirection: "column", gap: "2px", overflow: "hidden", minWidth: 0 }}>
+              <span style={{ color: "var(--text)", fontWeight: 500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", display: "block" }}>
+                {meshJob.message || (meshJob.stage ? `Processing ${meshJob.stage.replaceAll("_", " ")}…` : "Working…")}
+              </span>
+              {isRunning && (
+                <span style={{ fontSize: "0.68rem", color: "var(--muted)", fontVariantNumeric: "tabular-nums" }}>
+                  Stage {meshJob.stage_index ?? 1} of 4 · {stages.find(s => s.key === meshJob.stage)?.label ?? "Processing"}
+                </span>
+              )}
+            </div>
+            <div style={{ display: "flex", alignItems: "center", gap: "6px", flexShrink: 0 }}>
+              {etaText && (
+                <span style={{ fontSize: "0.68rem", background: "rgba(46, 146, 174, 0.2)", color: "var(--cyan)", padding: "2px 6px", borderRadius: "4px", border: "1px solid rgba(46, 146, 174, 0.4)", fontWeight: 600 }}>
+                  ⏱ ETA {etaText}
+                </span>
+              )}
+              <strong style={{ fontSize: "0.85rem", fontVariantNumeric: "tabular-nums", color: "var(--cyan)" }}>
+                {Math.round((meshJob.progress ?? 0) * 100)}%
+              </strong>
+            </div>
           </div>
 
           {meshJob.state === "failed" && (

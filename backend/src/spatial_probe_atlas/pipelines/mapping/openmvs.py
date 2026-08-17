@@ -10,8 +10,40 @@ from spatial_probe_atlas.domain.errors import AppError
 ProgressCallback = Callable[[str, int, int, float, str], None]
 
 
+import re
+import time
+
+def _parse_openmvs_line(raw_line: str) -> tuple[float | None, str | None, str]:
+    # Strip ANSI escape codes
+    line = re.sub(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])', '', raw_line).strip()
+    if not line:
+        return None, None, ""
+
+    # Remove timestamps like "12:08:14 [ScnTextr] " or "[App     ] "
+    clean = re.sub(r'^\d{2}:\d{2}:\d{2}\s*\[[^\]]+\]\s*', '', line)
+    clean = re.sub(r'^\[[^\]]+\]\s*', '', clean).strip()
+
+    pct: float | None = None
+    eta: str | None = None
+
+    # Search for percentage: matches "(45%", "45%", "( 45% )", "(100%, 287ms)", etc.
+    pct_match = re.search(r'\(?\s*(\d{1,3})\s*%', clean)
+    if pct_match:
+        val = int(pct_match.group(1))
+        if 0 <= val <= 100:
+            pct = val / 100.0
+
+    # Search for ETA: matches "ETA 10s", "ETA 1m23s", "ETA 00:15", "ETA 2s345ms", etc.
+    eta_match = re.search(r'ETA\s*[:=]?\s*([0-9a-zA-Z\:\.]+)', clean, re.IGNORECASE)
+    if eta_match:
+        eta = eta_match.group(1).rstrip('),;.')
+
+    return pct, eta, clean
+
+
 def _run_mvs(command: list[str], cwd: Path, progress: ProgressCallback, stage: str, stage_index: int, total_stages: int, message: str, bin_path: Path | None) -> None:
-    progress(stage, stage_index, total_stages, 0.0, message)
+    start_progress = (stage_index - 1) / float(total_stages)
+    progress(stage, stage_index, total_stages, start_progress, message)
     
     executable = command[0]
     if bin_path:
@@ -21,19 +53,14 @@ def _run_mvs(command: list[str], cwd: Path, progress: ProgressCallback, stage: s
         command = [executable] + command[1:]
 
     try:
-        subprocess.run(
+        process = subprocess.Popen(
             command,
             cwd=cwd,
-            check=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
-        )
-    except subprocess.CalledProcessError as exc:
-        raise AppError(
-            f"OPENMVS_{command[0].upper()}_FAILED",
-            f"{command[0]} failed: {exc.stdout}",
-            status_code=500,
+            bufsize=1,
+            universal_newlines=True,
         )
     except FileNotFoundError:
         raise AppError(
@@ -41,7 +68,50 @@ def _run_mvs(command: list[str], cwd: Path, progress: ProgressCallback, stage: s
             f"'{executable}' executable not found. Ensure OpenMVS is installed and the path is correct.",
             status_code=500,
         )
-    progress(stage, stage_index, total_stages, 1.0, f"{command[0]} completed successfully.")
+
+    last_update_time = 0.0
+    last_pct = 0.0
+
+    if process.stdout:
+        buffer: list[str] = []
+        while True:
+            char = process.stdout.read(1)
+            if not char:
+                break
+            if char in ('\r', '\n'):
+                line = "".join(buffer).strip()
+                buffer.clear()
+                if line:
+                    pct, eta, clean_line = _parse_openmvs_line(line)
+                    now = time.time()
+                    
+                    if pct is not None:
+                        last_pct = pct
+                        overall = max(0.0, min(1.0, ((stage_index - 1) + pct) / float(total_stages)))
+                        msg = clean_line
+                        if eta and "ETA" not in msg.upper():
+                            msg += f" · ETA {eta}"
+                        progress(stage, stage_index, total_stages, overall, msg)
+                        last_update_time = now
+                    elif clean_line and len(clean_line) > 6 and (now - last_update_time > 0.4):
+                        # Filter out non-essential debug lines (like memory info, SSE info)
+                        if not any(k in clean_line for k in ("MEMORYINFO", "PageFault", "WorkingSet", "Quota", "Pagefile", "CPU:", "RAM:", "OS:", "Disk:", "Build date:")):
+                            overall = max(0.0, min(1.0, ((stage_index - 1) + last_pct) / float(total_stages)))
+                            progress(stage, stage_index, total_stages, overall, clean_line[:120])
+                            last_update_time = now
+            else:
+                buffer.append(char)
+
+    process.wait()
+    if process.returncode != 0:
+        raise AppError(
+            f"OPENMVS_{command[0].upper()}_FAILED",
+            f"{command[0]} failed with exit code {process.returncode}.",
+            status_code=500,
+        )
+        
+    end_progress = stage_index / float(total_stages)
+    progress(stage, stage_index, total_stages, end_progress, f"{command[0]} completed successfully.")
 
 
 def _color_mesh_from_cameras(colmap_dir: Path, images_dir: Path, input_ply: Path, output_ply: Path, output_obj: Path | None = None) -> None:
