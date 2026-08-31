@@ -280,17 +280,24 @@ def _probe_metrics(
         aruco_detections, _ = detect_aruco(frame.rgb, frame.width, frame.height, "DICT_4X4_50", marker_ids)
         
     tip_2d = None
-    if result.get("tracked") and tip_offset and len(tip_offset) == 3 and "rvec" in result and "tvec" in result:
+    tip_3d_c = None
+    if result.get("tracked") and "rvec" in result and "tvec" in result:
         try:
             import cv2
             rvec = np.asarray(result["rvec"], dtype=np.float64)
             tvec = np.asarray(result["tvec"], dtype=np.float64)
-            K = np.asarray(getattr(frame, "intrinsic_matrix", None) or [[frame.width * 0.8, 0, frame.width / 2.0], [0, frame.width * 0.8, frame.height / 2.0], [0, 0, 1.0]], dtype=np.float64).reshape(3, 3)
-            tip_3d = np.asarray(tip_offset, dtype=np.float64).reshape(1, 3)
-            proj_tip, _ = cv2.projectPoints(tip_3d, rvec, tvec, K, None)
-            tip_2d = [float(proj_tip[0, 0, 0]), float(proj_tip[0, 0, 1])]
-        except Exception as e:
-            print(f"[Tip 2D Proj Error] {e}")
+            tip_offset_vec = np.asarray(tip_offset if (tip_offset and len(tip_offset) == 3) else [0, 0, 0], dtype=np.float64)
+            R_mat, _ = cv2.Rodrigues(rvec)
+            p_tip = (R_mat @ tip_offset_vec) + tvec.reshape(3)
+            tip_3d_c = [float(p_tip[0]), float(p_tip[1]), float(p_tip[2])]
+
+            if tip_offset and len(tip_offset) == 3:
+                K = np.asarray(getattr(frame, "intrinsic_matrix", None) or [[frame.width * 0.8, 0, frame.width / 2.0], [0, frame.width * 0.8, frame.height / 2.0], [0, 0, 1.0]], dtype=np.float64).reshape(3, 3)
+                tip_3d_local = np.asarray(tip_offset, dtype=np.float64).reshape(1, 3)
+                proj_tip, _ = cv2.projectPoints(tip_3d_local, rvec, tvec, K, None)
+                tip_2d = [float(proj_tip[0, 0, 0]), float(proj_tip[0, 0, 1])]
+        except Exception:
+            pass
 
     return {
         "blob_count": result["candidate_count"],
@@ -304,6 +311,9 @@ def _probe_metrics(
         "simulated": result.get("simulated", False),
         "aruco_detections": aruco_detections,
         "tip_2d": tip_2d,
+        "tip_3d": tip_3d_c,
+        "rvec": result.get("rvec"),
+        "tvec": result.get("tvec"),
     }
 
 
