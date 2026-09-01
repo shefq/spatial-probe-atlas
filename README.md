@@ -11,13 +11,12 @@
 
 It acts as an AR localization system that bridges physical tools (such as fiber-optic sensor probes) with a digitized 3D coordinate system. 
 
-*(Note: V1 intentionally does not include integrated spectrometers, FBG sensors, temperature logging, classification/diagnosis models, GLB, Gaussian splatting, cloud accounts, or a plugin runtime. It does support generating and viewing 100% full-color 3D meshes).*
 
 ---
 
 ## 🚀 Key Features
 
-* **Real-time 3D Mapping (SfM):** Captures RGB-D data via a Record3D iPhone client and reconstructs dense 3D point-cloud reference maps.
+* **Real-time 3D Mapping & Dense Meshing (SfM & OpenMVS):** Captures RGB-D data via a Record3D iPhone client, reconstructs dense 3D point-cloud reference maps, generates textured surface meshes via OpenMVS, and performs automated ArUco metric board alignment.
 * **Live Camera & Probe Tracking:** Utilizes highly optimized ArUco tracking, temporal pose prediction, and configurable blob detection to continuously track the camera and physical 5-marker probe at low latency.
 * **Integrated Probe Fixture Generator:** A built-in 3D visual designer (`Probe Designer Studio`) that allows you to parametrically design custom 5-marker EPnP rigid body probes, generating 3D-printable geometry (via a Blender Python script) and its corresponding `calibration.json`.
 * **Spatial Registration:** Accurately calculates the exact 3D coordinates of the probe's invisible tip relative to the point-cloud map.
@@ -70,14 +69,19 @@ The application uses repository-local `.venv` / `.runtime` dependencies, so it w
    ```bat
    run.bat
    ```
-   The backend will serve the built UI and API on `http://127.0.0.1:8000`. Keep the console open while working. Use `Ctrl+C` for graceful shutdown.
+   The backend will serve the built UI and API on `http://127.0.0.1:8765`. Keep the console open while working. Use `Ctrl+C` for graceful shutdown.
+
+3. **Updating / Upgrading:**
+   ```bat
+   update.bat -ReleasePackage path\to\release.zip -Sha256 <64-hex-value>
+   ```
 
 ### Data Storage
 The default data root is `%LOCALAPPDATA%\SpatialProbeAtlas`. Project data, maps, and recordings are **never** stored inside the Git repository. 
 
 ---
 
-## 📡 External Device API
+## 📡 External Device API & Automation
 
 You can trigger a spatial point capture (e.g., saving a tissue measurement) from an external script. The backend automatically correlates your API call with the active live-tracking position.
 
@@ -90,6 +94,16 @@ You can trigger a spatial point capture (e.g., saving a tissue measurement) from
 }
 ```
 *No position needs to be provided—the system reads the latest live camera and probe coordinates automatically.*
+
+### Example Client Script
+Run the included client script to test automated point injection or interactive manual annotation:
+```powershell
+# Continuous simulated streaming:
+python scripts/example_api_client.py --interval 5.0
+
+# Manual interactive annotation mode:
+python scripts/example_api_client.py --manual
+```
 
 ---
 
@@ -108,6 +122,12 @@ doctor.bat -CpuMapping
 & .\scripts\verify.ps1 -CpuMapping
 ```
 
+**Probe Tracking Accuracy Evaluation:**
+Benchmark physical probe-tip accuracy, static jitter, RMSE, and tracking success rate under varying camera distances and oblique angles:
+```powershell
+python scripts/evaluate_probe_accuracy.py --poses 6 --frames-per-pose 5
+```
+
 Record3D integration tests and CUDA checks are explicitly separated from deterministic CPU/replay automation. Browser E2E dependencies and commands are detailed in [tests/e2e/README.md](tests/e2e/README.md).
 
 ---
@@ -119,6 +139,8 @@ Record3D integration tests and CUDA checks are explicitly separated from determi
 * [Hardware Validation](docs/HARDWARE_VALIDATION.md)
 * [Backup & Recovery](docs/BACKUP_AND_RECOVERY.md)
 * [Development Guide](docs/DEVELOPMENT.md)
+* [Review & Export Contract](docs/REVIEW_EXPORT_CONTRACT.md)
+* [Browser E2E Testing](tests/e2e/README.md)
 * [Architecture Decision Records (ADRs)](docs/adr)
 
 ---
@@ -131,6 +153,7 @@ This project integrates and builds upon several exceptional open-source tools an
 * **[Three.js](https://threejs.org/)**: Powers the high-performance 3D Spatial Viewer.
 * **[ALIKED](https://github.com/Shiaoming/ALIKED) & [LightGlue](https://github.com/cvg/LightGlue)**: Utilized in the CUDA mapping profile for state-of-the-art feature extraction and matching.
 * **[COLMAP / pycolmap](https://colmap.github.io/)**: Provides robust Structure-from-Motion (SfM) for 3D reconstruction.
+* **[OpenMVS](https://github.com/cdcseacave/openMVS)**: Provides multi-view stereo dense point cloud reconstruction, mesh filtering, and texturing.
 
 ---
 
